@@ -1,6 +1,10 @@
 # AgentForGMMIS
 Master's Thesis Project - Pezzoli Luca - luca2.pezzoli@mail.polimi.it
 
+> **Documentation & Thesis Notes**:
+> * **[PROJECT_CONTEXT.md](PROJECT_CONTEXT.md)**: Foundational thesis background, paper methodology (Moglia et al., *Information Fusion* 2026), database schema, and system specifications.
+> * **[docs/THESIS_DESIGN_LOG.md](docs/THESIS_DESIGN_LOG.md)**: Architectural decisions, multi-agent hierarchy rationale ("Vigile" / Outreach), zero-cost budget strategy, and notes for the final thesis dissertation.
+
 ---
 
 ## 1. Mufasa Environment Setup (One-time)
