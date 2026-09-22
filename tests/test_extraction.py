@@ -1,0 +1,150 @@
+"""Unit and integration tests for PDF parsing, extraction schemas, and evaluation."""
+
+from pathlib import Path
+import pytest
+
+from agent_gmmis.config import PROJECT_ROOT
+from agent_gmmis.data.db_manager import DatabaseManager
+from agent_gmmis.data.models import InclusionCriteriaCheck
+from agent_gmmis.extraction.evaluator import ExtractionEvaluator
+from agent_gmmis.extraction.extractor import ExtractionAgent
+from agent_gmmis.extraction.pdf_parser import PDFParser
+from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
+from agent_gmmis.llm.client import LLMClient, LLMConfig
+
+SAMPLE_PDF_PATH = PROJECT_ROOT / "data" / "sample_papers" / "medsam_arxiv.pdf"
+
+
+class TestPDFParser:
+    """Verifies PyMuPDF extraction capabilities on real or synthetic manuscripts."""
+
+    def test_parse_manuscript(self, tmp_path):
+        if SAMPLE_PDF_PATH.exists():
+            target_path = SAMPLE_PDF_PATH
+        else:
+            import pymupdf
+            target_path = tmp_path / "synthetic_sample.pdf"
+            doc = pymupdf.open()
+            p1 = doc.new_page()
+            p1.insert_text((50, 72), "Segment Anything in Medical Images (MedSAM)\nAbstract: Medical foundation model.\n")
+            p2 = doc.new_page()
+            p2.insert_text((50, 72), "Table 1: Benchmark Results on BraTS and BTCV\nBraTS Dice: 85.5%")
+            doc.save(target_path)
+            doc.close()
+
+        manuscript = PDFParser.parse(target_path)
+        assert manuscript.total_pages > 0
+        assert len(manuscript.pages_text) == manuscript.total_pages
+        assert len(manuscript.table_pages) > 0, "Should identify pages containing evaluation tables"
+
+        # Check full text generation
+        full_text = manuscript.get_full_text(max_pages=3)
+        assert len(full_text) > 30
+        assert "Segment Anything" in full_text or "MedSAM" in full_text
+
+        # Check table dense text
+        table_text = manuscript.get_table_dense_text()
+        assert len(table_text) > 10
+
+
+class TestExtractionSchemas:
+    """Verifies schema validation and score normalization."""
+
+    def test_raw_score_normalization(self):
+        score = RawExtractedScore(
+            dataset_name="BraTS 2021",
+            organ_or_task="Brain Tumor",
+            dice_score=85.5,  # percentage
+            table_or_section_ref="Table 1",
+        )
+        assert score.dice_score == 0.855
+
+    def test_extracted_paper_data_validation(self):
+        data = ExtractedPaperData(
+            paper_title="Segment Anything in Medical Images",
+            proposed_model_id="MedSAM",
+            code_repository_url="https://github.com/bowang-lab/MedSAM",
+            millions_of_parameters=93.7,
+            resources_total_vram_gb=1600,
+            screening=InclusionCriteriaCheck(
+                is_3d=True,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[
+                RawExtractedScore(
+                    dataset_name="BraTS",
+                    organ_or_task="Brain Tumor",
+                    dice_score=0.7563,
+                    is_baseline_comparison=False,
+                ),
+                RawExtractedScore(
+                    dataset_name="BTCV",
+                    organ_or_task="Abdomen Multi-Organ",
+                    dice_score=0.8030,
+                    is_baseline_comparison=False,
+                ),
+            ],
+        )
+        assert data.proposed_model_id == "MedSAM"
+        assert len(data.extracted_scores) == 2
+        assert data.screening.is_included is True
+
+
+class TestExtractionEvaluator:
+    """Verifies benchmarking extracted predictions against database ground truth."""
+
+    def test_ground_truth_comparison(self):
+        db = DatabaseManager()
+        evaluator = ExtractionEvaluator(db_manager=db)
+
+        # Build mock extracted data with exact GT values for BraTS and BTCV on MedSAM
+        extracted = ExtractedPaperData(
+            paper_title="Segment Anything in Medical Images",
+            proposed_model_id="MedSAM",
+            millions_of_parameters=93.7,
+            code_repository_url="https://github.com/bowang-lab/MedSAM",
+            resources_total_vram_gb=1600,
+            screening=InclusionCriteriaCheck(
+                is_3d=True,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[
+                RawExtractedScore(
+                    dataset_name="BraTS",
+                    organ_or_task="Brain Tumor",
+                    dice_score=0.7563,  # exact GT in database
+                    is_baseline_comparison=False,
+                ),
+                RawExtractedScore(
+                    dataset_name="BTCV",
+                    organ_or_task="Abdomen",
+                    dice_score=0.8030,  # exact GT in database
+                    is_baseline_comparison=False,
+                ),
+            ],
+        )
+
+        report = evaluator.evaluate(extracted, ground_truth_id="MedSAM")
+
+        assert report.model_id == "MedSAM"
+        assert report.parameter_error_pct == 0.0
+        assert report.code_url_match is True
+        assert report.matched_datasets_count == 2
+        assert report.dataset_precision == 1.0
+        assert report.dice_mae is not None
+        assert report.dice_mae < 1e-4  # effectively 0 error
+
+
+class TestExtractionAgentMock:
+    """Verifies ExtractionAgent execution in offline/mock mode."""
+
+    def test_offline_extractor_execution(self):
+        mock_client = LLMClient(config=LLMConfig(provider="mock"))
+        agent = ExtractionAgent(llm_client=mock_client)
+
+        data = agent.process_pdf(SAMPLE_PDF_PATH)
+        assert isinstance(data, ExtractedPaperData)

@@ -45,3 +45,14 @@ htmlcov/
 # Logs
 logs/*.out
 logs/*.err
+
+# Environment & Secrets
+.env
+.env.*
+*.env
+
+# Paper Caches & Downloaded PDFs
+data/cache_papers/
+data/sample_papers/
+*.pdf
+

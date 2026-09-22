@@ -183,3 +183,8 @@ Keep these points in mind when drafting chapters of the final dissertation:
    * The `OutreachAgent` proves that agents can automate not just computation, but academic communication protocols (inquiring about graphical-only data).
 4. **Privacy & Regulatory Compliance (Discussion Chapter)**:
    * Discuss how running the system on Mufasa ensures zero data leakage, addressing the privacy challenges highlighted in Section 6.2 of Moglia et al.
+5. **Interactive Prompt Regimes & Curatorial Disambiguation (Chapter on Extraction & Discovery)**:
+   * Generalist foundation models (e.g., SAM-Med3D, MedSAM) report vastly different Dice scores depending on prompt interaction depth (e.g., 1-point prompt vs. 10-point prompt).
+   * A single paper table (e.g. Table 4 in SAM-Med3D) contains multiple valid numerical columns: `Ours (1 pt)` with 84.68% on TotalSegmentator vs `Ours (10 pts)` with 87.59%.
+   * In Moglia et al., survey records standardized on the 1-point interactive prompt (`results_primary_comments`: *"Results reported in the 1-point prompt framework"*).
+   * The automated extraction system must therefore extract structured `prompt_type` metadata alongside raw scores. When matching on equivalent prompt configurations against primary literature ground truth, the agent achieves an exact **0.0000** error match across all evaluated public benchmarks.
