@@ -22,8 +22,10 @@ Follow these strict extraction guidelines:
    - Extract Dice scores ONLY. Do NOT confuse Dice with HD95, IoU, or standard deviation!
    - If scores are reported in percentages (e.g. 88.5%), normalize to [0.0, 1.0] (0.885).
    - Distinguish whether a score belongs to the PROPOSED model or an evaluated BASELINE model (e.g. nnU-Net, Swin UNETR).
-   - Identify the canonical dataset name and target organ/task.
+   - Identify the canonical dataset name and target organ/task. When a paper mentions challenge datasets under generic organ or modality labels, resolve them to their standard canonical challenge name if disclosed in the text (e.g. "Abdomen CT" / FLARE -> "FLARE", "Abdomen MR" / AMOS -> "AMOS", "Synapse" / Beyond the Cranial Vault -> "BTCV", "BraTS21" -> "BraTS", "ATLAS v2.0" -> "ATLAS v2.0", "Prost.MRI" / PROMISE12 -> "PROMISE12", "Fed-KiTS" -> "KiTS", "TotalSegmentator" -> "TotalSegmentator").
    - PROMPT REGIMES (CRUCIAL): For promptable/interactive models (e.g. SAM-based architectures), tables often report performance across multiple prompt settings (e.g. "1 pt", "3 pts", "5 pts", "10 pts", "bounding box"). Always extract each setting and set `prompt_type` (e.g. "1 point", "10 points", "box"). Crucially ensure the single-point baseline ("1 point") is extracted, as survey comparisons standardize on 1-point prompts!
+   - MULTI-MODALITY & TEST SETS: If a table reports results across multiple modalities (e.g. T1, T2, T1ce, FLAIR) or multiple test sets (e.g. MRI test set vs CT test set in TotalSegmentator), extract each score and also the overall mean if reported.
+   - DATA PARTITIONS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM), tables report varying amounts of labeled data (e.g. 5%, 10%, 100%) or learning settings (Federated vs Centralized). Extract each setting (e.g. "Federated", "Centralized", "10% labeled") so standard comparisons can be performed.
 
 4. ACCURACY AND HONESTY:
    - Do NOT guess or hallucinate numbers. If a parameter or metric is not disclosed in the text or tables, set it to None.

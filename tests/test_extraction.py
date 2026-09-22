@@ -148,3 +148,63 @@ class TestExtractionAgentMock:
 
         data = agent.process_pdf(SAMPLE_PDF_PATH)
         assert isinstance(data, ExtractedPaperData)
+
+
+class TestDatasetAliasResolver:
+    """Verifies robust resolution of non-standard and challenge aliases."""
+
+    def test_alias_resolution(self):
+        from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver
+
+        resolver = DatasetAliasResolver()
+        assert resolver.resolve("Organs in Abdomen CT") == "FLARE"
+        assert resolver.resolve("Organs in Abdomen MR") == "AMOS"
+        assert resolver.resolve("Abdomen CT") == "FLARE"
+        assert resolver.resolve("Synapse") == "BTCV"
+        assert resolver.resolve("btcv") == "BTCV"
+        assert resolver.resolve("BraTS challenge") == "BraTS"
+        assert resolver.resolve("ATLAS v2.0 dataset") == "ATLAS v2.0"
+        assert resolver.resolve("Prost.MRI") == "PROMISE12"
+        assert resolver.resolve("Fed-KiTS") == "KiTS"
+        assert resolver.resolve("AMOS external test set (MRI only)") == "AMOS"
+        assert resolver.resolve("CHAOS external test set (MRI only)") == "CHAOS"
+        assert resolver.resolve("NonExistentDatasetXYZ") is None
+
+    def test_evaluator_with_aliases(self):
+        """Verifies evaluator matches BioSAM-2 aliases (Organs in Abdomen CT/MR)."""
+        db = DatabaseManager()
+        evaluator = ExtractionEvaluator(db_manager=db)
+
+        extracted = ExtractedPaperData(
+            paper_title="Biomedical SAM 2",
+            proposed_model_id="Biomedical SAM-2 (BioSAM-2)",
+            millions_of_parameters=38.9,
+            screening=InclusionCriteriaCheck(
+                is_3d=True,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[
+                RawExtractedScore(
+                    dataset_name="Organs in Abdomen CT",
+                    organ_or_task="Abdomen",
+                    dice_score=0.7632,
+                    is_baseline_comparison=False,
+                ),
+                RawExtractedScore(
+                    dataset_name="Organs in Abdomen MR",
+                    organ_or_task="Abdomen",
+                    dice_score=0.7439,
+                    is_baseline_comparison=False,
+                ),
+            ],
+        )
+
+        report = evaluator.evaluate(extracted, ground_truth_id="Biomedical SAM-2 (BioSAM-2)", compare_source="primary")
+        assert report.matched_datasets_count == 2
+        assert report.ground_truth_datasets_count == 2
+        assert report.dataset_recall == 1.0
+        assert report.dice_mae is not None
+        assert report.dice_mae < 1e-4
+

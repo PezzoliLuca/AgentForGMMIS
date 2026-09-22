@@ -22,9 +22,10 @@ class ExtractionAgent:
 
     def process_manuscript(self, manuscript: ParsedManuscript) -> ExtractedPaperData:
         """Extracts structured benchmark information from a parsed manuscript."""
-        # Compose content prioritizing key introduction (pages 1-2) and main benchmark table pages
-        table_pages = manuscript.table_pages or []
-        selected_pages = sorted(set([1, 2] + table_pages[:5]))
+        # Compose content prioritizing key introduction (pages 1-2 for metadata, backbone, abstract)
+        # and the highest-scoring evaluation table pages (up to 8 pages ranked by metrics and table density)
+        top_table_pages = manuscript.table_pages[:8] if manuscript.table_pages else []
+        selected_pages = sorted(set([1, 2] + top_table_pages))
 
         content_snippet = "\n\n--- PAGE BREAK ---\n\n".join(
             f"[Page {p}]\n{manuscript.pages_text[p]}"

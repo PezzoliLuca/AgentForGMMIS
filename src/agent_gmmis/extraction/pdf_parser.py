@@ -16,6 +16,7 @@ class ParsedManuscript:
     authors: str = ""
     pages_text: Dict[int, str] = field(default_factory=dict)
     table_pages: List[int] = field(default_factory=list)
+    page_scores: Dict[int, int] = field(default_factory=dict)
     abstract: str = ""
 
     def get_full_text(self, max_pages: Optional[int] = None) -> str:
@@ -51,10 +52,12 @@ class PDFParser:
         if not path.exists():
             raise FileNotFoundError(f"PDF file not found: {path}")
 
+        import re
+
         doc = pymupdf.open(str(path))
         total_pages = len(doc)
         pages_text: Dict[int, str] = {}
-        table_pages: List[int] = []
+        page_scores: Dict[int, int] = {}
         abstract_text = ""
 
         # Metadata from doc
@@ -68,10 +71,35 @@ class PDFParser:
             text = page.get_text("text").strip()
             pages_text[page_num] = text
 
-            # Heuristic for table detection
+            # Intelligent scoring for benchmark tables and evaluation sections
             text_lower = text.lower()
-            if any(k in text_lower for k in ("table 1", "table 2", "table 3", "table i", "dice score", "dsc", "mean dice")):
-                table_pages.append(page_num)
+            score = 0
+
+            # 1. Table and figure mentions (e.g. Table 1, Table 4, Figure 7)
+            tables = re.findall(r"\btable\s+(\d+|[ivx]+)\b", text_lower)
+            figures = re.findall(r"\b(?:figure|fig\.?)\s+(\d+|[ivx]+)\b", text_lower)
+            metrics = re.findall(r"\b(dice|dsc|mean dice|iou|jaccard|hd95|nsd)\b", text_lower)
+
+            score += len(tables) * 6
+            if len(metrics) > 0 and len(figures) > 0:
+                # Evaluation figures reporting segmentation performance (e.g. Figure 7 in Merlin)
+                score += len(figures) * 4 + len(metrics) * 6
+            else:
+                score += len(metrics) * 4
+
+            # 2. Benchmark and comparison terminology
+            bench = re.findall(r"\b(benchmark|comparison|baseline|sota|state-of-the-art|test set|validation set|cross-validation)\b", text_lower)
+            score += len(bench) * 2
+
+            # 3. Dense numerical reporting (e.g. 0.8420, 88.5%)
+            decimals = re.findall(r"\b0\.\d{3,4}\b", text_lower)
+            score += min(len(decimals), 10)
+
+            # 4. Main manuscript priority: the primary methodology & evaluation tables reside in main body (pages <= 25)
+            if page_num <= 25 and score > 0:
+                score += 15
+
+            page_scores[page_num] = score
 
             # Heuristic for abstract (usually page 1 or 2)
             if page_num in (1, 2) and "abstract" in text_lower and not abstract_text:
@@ -89,6 +117,16 @@ class PDFParser:
                 if abs_lines:
                     abstract_text = " ".join(abs_lines).strip()
 
+        # Multi-page table continuation bonus:
+        # If previous page has high evaluation density and current page has metrics, boost current page
+        orig_scores = dict(page_scores)
+        for p in range(2, total_pages + 1):
+            if orig_scores.get(p - 1, 0) >= 30 and orig_scores.get(p, 0) > 0:
+                page_scores[p] += 12
+
+        # Extract table pages sorted by relevance score descending
+        table_pages = [p for p, s in sorted(page_scores.items(), key=lambda x: x[1], reverse=True) if s > 0]
+
         # Fallback for doc_title if empty: extract first prominent line of page 1
         if not doc_title and 1 in pages_text:
             first_lines = [l.strip() for l in pages_text[1].split("\n") if len(l.strip()) > 10]
@@ -104,5 +142,6 @@ class PDFParser:
             authors=doc_author,
             pages_text=pages_text,
             table_pages=table_pages,
+            page_scores=page_scores,
             abstract=abstract_text,
         )

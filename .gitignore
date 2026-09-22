@@ -43,8 +43,8 @@ htmlcov/
 *~
 
 # Logs
-logs/*.out
-logs/*.err
+logs/
+*.log
 
 # Environment & Secrets
 .env

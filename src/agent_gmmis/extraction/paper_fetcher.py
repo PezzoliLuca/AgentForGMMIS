@@ -42,11 +42,13 @@ class PaperFetcher:
         if not arxiv_id:
             raise ValueError(f"Could not parse valid arXiv ID from: {arxiv_identifier}")
 
-        target_file = self.cache_dir / f"{arxiv_id}.pdf"
+        # Strip optional version suffix (e.g. 'v1') to avoid arXiv 404s on versioned pdf endpoints
+        base_id = re.sub(r"v[0-9]+$", "", arxiv_id)
+        target_file = self.cache_dir / f"{base_id}.pdf"
         if target_file.exists() and not force_download and target_file.stat().st_size > 1000:
             return target_file
 
-        pdf_url = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+        pdf_url = f"https://arxiv.org/pdf/{base_id}.pdf"
         ctx = ssl.create_default_context(cafile=certifi.where())
         headers = {
             "User-Agent": "AgentForGMMIS/1.0 (Politecnico di Milano Medical AI Survey Agent; mailto:luca2.pezzoli@mail.polimi.it)",
