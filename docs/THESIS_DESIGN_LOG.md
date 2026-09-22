@@ -218,3 +218,11 @@ Keep these points in mind when drafting chapters of the final dissertation:
       * Challenge names vs. anatomical descriptions: Biomedical SAM 2 refers to `FLARE` as *"Organs in Abdomen CT"* and `AMOS` as *"Organs in Abdomen MR"*.
       * Challenge parent names vs. sub-challenges: *"Synapse"* vs. *"BTCV"*, *"Fed-KiTS"* vs. *"KiTS"*, *"Prost.MRI"* vs. *"PROMISE12"*.
     * Without ontology-driven entity resolution (`DatasetAliasResolver`), automated meta-analyses suffer from catastrophic dataset fragmentation and near-zero recall. With canonical reverse-indexing and word-boundary protection, extraction recall reached **100%** across 8 independent target models.
+11. **Preprint Drift & Publication Lifecycle Dynamics (The MoME Case Study)**:
+    * In medical AI, preprints on arXiv often use preliminary internal nomenclature (e.g., `WMHsMix`, `Tumour1`, `Tumour2` in the MoME preprint) and lack exhaustive benchmark tables.
+    * Later, the peer-reviewed journal version (e.g. published in *IEEE Transactions on Medical Imaging*, `\citep{10879789}`) introduces complete comparative matrices (e.g. Table IV) and multi-modality aggregations.
+    * **Thesis Insight**: Literature surveying is not a static one-off snapshot. The autonomous system must monitor the publication lifecycle of manuscripts, automatically detecting when a tracked arXiv preprint is formally published in a peer-reviewed journal and scheduling a re-extraction to capture finalized benchmark tables.
+12. **Context Window Economy vs. Hierarchical Supplementary Mining (The 74-Page SAT Paradigm)**:
+    * Massive foundation model papers (e.g. *SAT* with 74 pages) illustrate the fundamental trade-off between LLM inference latency and coverage depth. Feeding all 74 pages (80,000+ tokens) to an LLM incurs prohibitive latency and noise.
+    * By applying intelligent page scoring, the system achieves sub-5-second throughput on the main manuscript. When main-text tables report only aggregated summary metrics, the system can trigger a second-tier hierarchical probe targeting supplementary appendix sections (pages 30–60).
+    * **Thesis Insight**: Demonstrates that multi-agent document understanding is far more efficient than brute-force whole-document prompting, saving 90%+ computational overhead while retaining surgical precision.
