@@ -21,12 +21,16 @@ echo "📥 Downloading Model Weights to Mufasa Cache"
 echo "Model: $MODEL_NAME"
 echo "=========================================="
 
+# Disable Rust-based fast-transfer library (hf-xet) which allocates large memory buffers
+export HF_HUB_DISABLE_XET=1
+export HF_HUB_ENABLE_HF_TRANSFER=0
+
 python3 -c "
 import sys
 from huggingface_hub import snapshot_download
 model = sys.argv[1]
-print(f'Downloading {model} using memory-safe streaming...')
-snapshot_download(repo_id=model, max_workers=2)
+print(f'Downloading {model} using pure Python streaming (low RAM profile)...')
+snapshot_download(repo_id=model, max_workers=1)
 " "$MODEL_NAME"
 
 echo "=========================================="
