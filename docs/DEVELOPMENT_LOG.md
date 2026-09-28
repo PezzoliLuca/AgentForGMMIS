@@ -318,5 +318,14 @@ Implement the autonomous quality control and verification engine (`AuditorAgent`
      * Universal Client Support: Enhanced `LLMClient` to automatically detect `--provider mufasa` and route requests to `http://localhost:8000/v1` with fallback JSON-object schema decoding.
 * **Verification**: All 30 unit tests continue to pass in 0.49s. Full documentation updated in `README.md` and thesis design logs.
 
+---
 
-
+### 8. Mufasa HPC Cluster Deployment & Autonomous Overnight Queue (Job 4426)
+* **Environment Bootstrapping & Linux Diagnostics**:
+  * *PEP 668 Workaround*: Ubuntu 24.04 hosts on Mufasa restrict system pip installations. Bootstrapped standalone `virtualenv` into user space (`~/.local/bin/pip install --break-system-packages virtualenv`) and regenerated a clean, isolated virtual environment at `~/AgentForGMMIS/venv`.
+  * *Login Node Memory Limit (Ulimit OOM)*: The Rust-based `hf-xet` accelerator attempted 64 MB buffer allocations exceeding the shared login node per-process memory limits. Fixed by removing `hf-xet` and forcing pure Python streaming chunk downloads (`HF_HUB_DISABLE_XET=1`), successfully caching 9.98 GB of `Qwen/Qwen2.5-14B-Instruct-AWQ` in 1m 52s at ~110 MB/s.
+  * *PyMuPDF & Path Hardening*: Installed `pymupdf` in the Mufasa venv and added defensive `sys.path.insert(0, .../src)` in `scripts/run_batch_benchmark.py` for guaranteed headless execution across heterogeneous nodes.
+* **SLURM Batch Job 4426**:
+  * Submitted autonomous batch job 4426 requesting `gpu:3g.20gb:1` (20 GB A100 MIG slice) on node `gn01` via `sbatch scripts/mufasa/run_benchmark_mufasa.sh Qwen/Qwen2.5-14B-Instruct-AWQ 15`.
+  * Scheduled for autonomous execution on `gn01` upon completion of active daytime jobs.
+  * Designed for fully decoupled operation: runs vLLM, executes the 15-paper benchmark, writes structured logs to `logs/mufasa_bench_4426.out` and `logs/latest_batch_benchmark.md`, and terminates cleanly without requiring active SSH/VPN sessions.
