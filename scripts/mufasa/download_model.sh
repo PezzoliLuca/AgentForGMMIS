@@ -19,6 +19,10 @@ echo "📥 Downloading Model Weights to Mufasa Cache"
 echo "Model: $MODEL_NAME"
 echo "=========================================="
 
-huggingface-cli download "$MODEL_NAME"
+if command -v hf &> /dev/null; then
+    hf download "$MODEL_NAME"
+else
+    python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$MODEL_NAME')"
+fi
 
 echo "✅ Download complete! Model is ready for vLLM."
