@@ -49,7 +49,7 @@ trap "kill -9 $VLLM_PID 2>/dev/null" EXIT INT TERM
 echo "Waiting for vLLM server to be ready..."
 MAX_WAIT=300
 ELAPSED=0
-until curl -s http://localhost:$PORT/health | grep -q "ok" || [ $ELAPSED -ge $MAX_WAIT ]; do
+until curl -sf http://localhost:$PORT/health > /dev/null || [ $ELAPSED -ge $MAX_WAIT ]; do
     sleep 5
     ELAPSED=$((ELAPSED + 5))
     echo "   ... waiting for vLLM ($ELAPSED / $MAX_WAIT seconds)"
