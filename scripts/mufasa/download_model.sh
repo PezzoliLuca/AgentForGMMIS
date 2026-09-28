@@ -7,6 +7,8 @@
 #   bash scripts/mufasa/download_model.sh [MODEL_NAME]
 # ==============================================================================
 
+set -e
+
 source ~/AgentForGMMIS/venv/bin/activate
 
 # Install requirements if not already present
@@ -19,10 +21,14 @@ echo "📥 Downloading Model Weights to Mufasa Cache"
 echo "Model: $MODEL_NAME"
 echo "=========================================="
 
-if command -v hf &> /dev/null; then
-    hf download "$MODEL_NAME"
-else
-    python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='$MODEL_NAME')"
-fi
+python3 -c "
+import sys
+from huggingface_hub import snapshot_download
+model = sys.argv[1]
+print(f'Downloading {model} using memory-safe streaming...')
+snapshot_download(repo_id=model, max_workers=2)
+" "$MODEL_NAME"
 
+echo "=========================================="
 echo "✅ Download complete! Model is ready for vLLM."
+echo "=========================================="
