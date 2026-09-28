@@ -8,6 +8,10 @@ from datetime import datetime
 from pathlib import Path
 import sys
 import time
+
+# Ensure src/ is on sys.path regardless of execution working directory or environment setup
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 from tabulate import tabulate
 
 from agent_gmmis.config import DEFAULT_DB_PATH
