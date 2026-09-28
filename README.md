@@ -68,42 +68,50 @@ To open an interactive shell directly on a compute node with an allocated GPU:
 srun --qos=gpu --gres=gpu:3g.20gb:1 --cpus-per-task=4 --mem=32G --pty /bin/bash
 ```
 
+## 3. Mufasa Open-Source LLM Execution (vLLM)
+
+Mufasa provides dedicated GPU nodes (`--gres=gpu:3g.20gb:1` MIG slices or full A100s). For autonomous table extraction and JSON verification, the system supports self-hosted open-source models served via high-throughput **vLLM** with OpenAI API compatibility.
+
+### Recommended Models for Mufasa (20 GB VRAM Allocation)
+
+| Model | Format | VRAM Footprint | Max Context | Best For |
+| :--- | :--- | :--- | :--- | :--- |
+| **`Qwen/Qwen2.5-14B-Instruct-AWQ`** *(Recommended)* | 4-bit AWQ | ~9 GB | 32k - 64k tokens | State-of-the-art structured JSON & table extraction, leaves 11 GB for KV cache |
+| **`Qwen/Qwen2.5-7B-Instruct`** | float16 / 4-bit | ~5 - 14 GB | 32k - 128k tokens | Ultra-fast inference, low resource consumption |
+| **`meta-llama/Llama-3.1-8B-Instruct`** | float16 / 4-bit | ~8 - 16 GB | 128k tokens | General reasoning and robust prompt alignment |
+
 ---
 
-## 3. Default Batch Job Script (`run_job.sh`)
+### Step-by-Step Workflow on Mufasa
 
-Submission script pre-configured for Mufasa policies:
-
+#### 1. Download Model Weights
+Run on Mufasa (login node or interactive session):
 ```bash
-#!/bin/bash
-#SBATCH --job-name=gmmis_job
-#SBATCH --qos=gpu
-#SBATCH --gres=gpu:3g.20gb:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
-#SBATCH --time=12:00:00
-#SBATCH --output=logs/%x_%j.out
-#SBATCH --error=logs/%x_%j.err
+ssh lpezzoli@10.79.23.96
+cd ~/AgentForGMMIS
+git pull
+bash scripts/mufasa/download_model.sh Qwen/Qwen2.5-14B-Instruct-AWQ
+```
 
-# Create logs directory
-mkdir -p logs
+#### 2. Run Autonomous All-in-One Benchmark via SLURM
+Submits an autonomous job that allocates the GPU, launches vLLM in the background, waits for health check, runs the 15-paper benchmark, and cleans up:
+```bash
+sbatch scripts/mufasa/run_benchmark_mufasa.sh Qwen/Qwen2.5-14B-Instruct-AWQ 15
+```
+Monitor progress:
+```bash
+squeue -u lpezzoli
+tail -f logs/mufasa_bench_<JOBID>.out
+```
 
-# Activate virtual environment
-source venv/bin/activate
+#### 3. Alternative: Running Interactively or via Mac Tunnel
+If you run `sbatch scripts/mufasa/start_vllm.sh` on Mufasa, you can port-forward to your Mac:
+```bash
+# On your local Mac:
+ssh -L 8000:localhost:8000 lpezzoli@10.79.23.96
 
-echo "=========================================="
-echo "Job ID: $SLURM_JOB_ID"
-echo "Node: $(hostname)"
-echo "Started: $(date)"
-echo "=========================================="
-
-# Inspect allocated GPU diagnostics
-nvidia-smi
-
-# Execute Python script with unbuffered output (-u)
-$SLURM_SUBMIT_DIR/venv/bin/python3 -u main.py
-
-echo "Finished: $(date)"
+# Then in local Mac terminal:
+.venv/bin/python3 scripts/run_batch_benchmark.py --provider mufasa --model Qwen/Qwen2.5-14B-Instruct-AWQ --count 15
 ```
 
 ---
@@ -112,6 +120,21 @@ echo "Finished: $(date)"
 
 ```text
 AgentForGMMIS/
-├── logs/              # SLURM output (.out) and error(.err) logs
-
+├── data/
+│   ├── database.sqlite       # Single source of truth (105 models, 64 datasets)
+│   └── cache_papers/         # 15 pre-cached arXiv PDF manuscripts
+├── scripts/
+│   ├── run_batch_benchmark.py # Autonomous batch benchmark runner (all models)
+│   ├── run_extraction.py     # Single paper extraction CLI
+│   └── mufasa/               # Mufasa SLURM HPC execution scripts
+│       ├── download_model.sh
+│       ├── start_vllm.sh
+│       └── run_benchmark_mufasa.sh
+├── src/agent_gmmis/          # Production Python package
+│   ├── data/                 # SQLite DAL & Pydantic models
+│   ├── extraction/           # PDFParser, Extractor, Prompts, Evaluator
+│   ├── auditing/             # AuditorAgent ("Il Vigile")
+│   └── llm/                  # Universal model client (Gemini, Mufasa, Ollama, Mock)
+├── tests/                    # 30 comprehensive unit & domain tests (pytest)
+└── logs/                     # Benchmark execution logs & Markdown reports
 ```

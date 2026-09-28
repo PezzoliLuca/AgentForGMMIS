@@ -78,7 +78,7 @@ class ExtractionEvaluator:
         # Group extracted scores by canonical resolved dataset name for the proposed model
         extracted_by_dataset: Dict[str, List[RawExtractedScore]] = {}
         for s in extracted.extracted_scores:
-            if not s.is_baseline_comparison:
+            if not s.is_baseline_comparison and s.dice_score is not None:
                 resolved = self.alias_resolver.resolve(s.dataset_name)
                 d_key = (resolved or s.dataset_name).strip()
                 extracted_by_dataset.setdefault(d_key, []).append(s)

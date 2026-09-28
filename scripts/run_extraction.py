@@ -126,8 +126,69 @@ def main():
     else:
         print("No numerical evaluation scores extracted.")
 
-    # Evaluation against Ground Truth (if requested or available)
+    # -------------------------------------------------------------
+    # Step 3.1: AuditorAgent ("Il Vigile" - Quality Assurance Critic)
+    # -------------------------------------------------------------
+    from agent_gmmis.auditing.auditor import AuditorAgent
+    from agent_gmmis.extraction.pdf_parser import PDFParser
+
+    print("\n" + "=" * 70)
+    print("👮 AUDITOR AGENT ('IL VIGILE') QUALITY ASSURANCE CERTIFICATION")
+    print("=" * 70)
     db = DatabaseManager(DEFAULT_DB_PATH)
+    auditor = AuditorAgent(db_manager=db)
+    manuscript = PDFParser.parse(pdf_file)
+    audit_report = auditor.audit(extracted_data, manuscript=manuscript)
+
+    status_icon = (
+        "✅"
+        if audit_report.status.value == "verified"
+        else ("⚠️" if audit_report.status.value == "flagged_warning" else "❌")
+    )
+    print(f"\nAudit Status: {status_icon} {audit_report.status.value.upper()}")
+    print(f"Confidence Score: {audit_report.confidence_score * 100:.1f}%")
+    print(f"Passed Sanity Checks: {'✅ Yes' if audit_report.passed_sanity_checks else '❌ No'}")
+    print(f"Passed Inclusion Screening: {'✅ Yes' if audit_report.passed_inclusion_screening else '❌ No'}")
+
+    if audit_report.rejection_reasons:
+        print(f"\n🚨 Rejection Reasons: {'; '.join(audit_report.rejection_reasons)}")
+
+    if audit_report.anomalies:
+        print(f"\n⚠️  Architectural / Parameter Anomalies ({len(audit_report.anomalies)}):")
+        anomaly_table = [[a.field, a.severity.upper(), a.message] for a in audit_report.anomalies]
+        print(tabulate(anomaly_table, headers=["Field", "Severity", "Message"], tablefmt="github"))
+
+    if audit_report.outliers:
+        print(f"\n📈 Statistical Baseline Outliers ({len(audit_report.outliers)}):")
+        outlier_table = [
+            [
+                o.dataset_name,
+                f"{o.extracted_score:.4f}",
+                f"{o.historical_mean:.4f} (max={o.historical_max:.4f})",
+                o.reason,
+            ]
+            for o in audit_report.outliers
+        ]
+        print(tabulate(outlier_table, headers=["Dataset", "Extracted", "Historical Benchmark", "Reason"], tablefmt="github"))
+
+    if audit_report.discrepancies:
+        print(f"\n🔍 Human Survey Discrepancies Intercepted ({len(audit_report.discrepancies)}):")
+        disc_table = [
+            [
+                d.dataset_name,
+                f"{d.extracted_score:.4f}",
+                f"{d.survey_ground_truth:.4f}",
+                f"{d.delta:+.4f}",
+                d.message,
+            ]
+            for d in audit_report.discrepancies
+        ]
+        print(tabulate(disc_table, headers=["Dataset", "Paper Extracted", "Survey Ground Truth", "Delta", "Notice"], tablefmt="github"))
+
+    if audit_report.data_diagnosis.value != "none":
+        print(f"\n🩺 Missing Data Diagnosis: {audit_report.data_diagnosis.value}")
+
+    # Evaluation against Ground Truth (if requested or available)
     gt_model = db.get_model(extracted_data.proposed_model_id)
 
     if args.evaluate or gt_model:

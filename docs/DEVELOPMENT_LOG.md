@@ -228,3 +228,95 @@ A critical outcome of this benchmark is classifying *why* certain papers exhibit
 * **`LHU-Net` (2/6 Matched, MAE = 0.0293)**:
   * *Root Cause*: In Table 2, baseline `D-LKA Net` scored 87.49% on Synapse, while proposed `LHU-Net` scored 87.83%. The human curator accidentally copied the baseline row (87.49%). The LLM extracted the true score (87.83%).
   * *Scientific Value*: Proves that automated agentic extraction can audit and clean published meta-analyses.
+
+---
+
+## [2026-09-23] — Step 3.1: AuditorAgent ("Il Vigile" - Critic)
+
+### 1. Objective
+Implement the autonomous quality control and verification engine (`AuditorAgent`), transitioning the system from a passive table extractor into a resilient **Actor-Critic architecture**. The Critic scrutinizes raw extraction outputs against physical sanity constraints, survey inclusion criteria, historical SQLite benchmark distributions, and detects missing tables/figures before any database ingestion.
+
+### 2. Architecture & Design Decisions
+* **Actor-Critic Separation**: Raw extraction from `ExtractionAgent` (Actor) is never trusted unconditionally. It must receive an `AuditReport` certification from `AuditorAgent` (Critic).
+* **Deterministic Verification Contracts**: Defined strict Pydantic v2 schemas in `src/agent_gmmis/auditing/schemas.py`:
+  * `AuditStatus`: `VERIFIED`, `FLAGGED_WARNING`, `REJECTED`, `NEEDS_OUTREACH`, `NEEDS_REPO_INSPECTION`.
+  * `AuditAnomaly`: Flags parameter scale mismatches or physical bounds violations.
+  * `OutlierDetectionResult`: Captures statistical deviations against historical ground truth.
+  * `DiscrepancyNotice`: Identifies divergence between fresh extraction and existing human survey records.
+  * `MissingDataDiagnosis`: Classifies why scalar tables are absent (graphical figures vs code repository).
+* **Dynamic Historical Knowledge Retrieval**: Extended `DatabaseManager` with `get_dataset_statistics(dataset_name, category)`, dynamically aggregating historical `min`, `max`, `mean`, and sample count across the 98 models in `results_primary` or `results_best`.
+* **Multi-Tiered Audit Rules**:
+  1. *Inclusion Criteria Screening*: Rejects non-3D (e.g. retinal fundus), non-radiological, private dataset, or non-DSC papers (`status = REJECTED`, confidence = 0.0).
+  2. *Architectural & Numerical Sanity*: Validates parameters against vision backbone scale heuristics (ViT-B ~85-150M; ViT-L ~300-450M; ViT-H ~600-800M).
+  3. *Biological & Statistical Outliers*: Enforces biological constraints on challenging targets (e.g., flags $>0.92$ DSC on Pancreas tumor as improbable; flags scores exceeding historical world SOTA by $>4\%$).
+  4. *Survey Typo Auditing*: Compares against existing records and flags human transcription errors (e.g., `LHU-Net` Table 2 discrepancy).
+  5. *Missing Data Routing*: Diagnoses papers with zero scalar tables by checking for graphical figures (`NEEDS_OUTREACH`) or GitHub URLs (`NEEDS_REPO_INSPECTION`).
+  6. *Autonomous Self-Consistency (Deploy Mode, Zero Ground Truth)*:
+     - **Baseline Confusion Check**: Rejects models where standard competitors (e.g. `nnU-Net`, `UNETR`) were mistakenly tagged as proposed model.
+     - **Internal Contradiction Check**: Detects conflicting duplicate scores for the same dataset, organ, and prompt setting.
+     - **Cloned Template Hallucination Check**: Rejects extraction if $\ge 4$ benchmarks report identical floating-point scores.
+     - **Single-GPU vs VRAM Check**: Flags single-GPU setups claiming $>120$GB VRAM.
+
+### 3. Files Created & Modified
+* **Auditing Module (`src/agent_gmmis/auditing/`)**:
+  * [`src/agent_gmmis/auditing/schemas.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/schemas.py): Pydantic contracts for audit reports, anomalies, and diagnoses.
+  * [`src/agent_gmmis/auditing/auditor.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/auditor.py): Full implementation of `AuditorAgent` with autonomous self-consistency rules.
+  * [`src/agent_gmmis/auditing/__init__.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/__init__.py): Module exports.
+* **Database Layer (`src/agent_gmmis/data/`)**:
+  * [`src/agent_gmmis/data/db_manager.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/data/db_manager.py): Added `get_dataset_statistics()`, fuzzy/partial matching in `get_model()` and `get_scores_for_model()`.
+* **Test Suite (`tests/`)**:
+  * [`tests/test_auditor.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_auditor.py): 11 rigorous test cases covering all audit paths and autonomous checks.
+
+### 4. Verification & Test Results
+* **Test Suite**: Executed `.venv/bin/pytest -v tests/test_auditor.py` and `.venv/bin/pytest -v`
+* **Result**: **27/27 tests passing in 0.38s** with 0 regressions.
+  * Clean verification on valid models (`MedSAM`).
+  * Instant rejection on inclusion violations, baseline model confusion, and negative parameters.
+  * Architectural warning on ViT-B parameter scale mismatch and single-GPU VRAM inconsistencies.
+  * Biological outlier flag on superhuman Pancreas tumor claims.
+  * Precise detection of human survey typo on `LHU-Net` (87.83% vs 87.49%).
+  * Rejection on cloned template hallucinations (identical score repeated $\ge 4$ times).
+  * Clean triaging of missing data into `NEEDS_OUTREACH`, `NEEDS_REPO_INSPECTION`, or `REJECTED`.
+
+### 5. Architectural Decision Record (ADR): Ingestion of Novel Models & Benchmarks (Phase 3.3)
+* **Problem**: In continuous deployment, newly discovered manuscripts introduce previously unindexed architectures and may evaluate on newly released open benchmarks (e.g. *AbdomenAtlas*, *TotalSegmentator v2*) or private clinical cohorts.
+* **Architectural Decision**: Reject micro-agent proliferation ("ModelValidatorAgent", "DatasetRegistrarAgent"). Instead, specialize the existing lifecycle tri-agent pipeline:
+  1. **`ExtractionAgent` (Mining)**: Discovers candidate model metadata and novel dataset names with attributes (public/private status, imaging modality, organ targets).
+  2. **`AuditorAgent` (Gatekeeper)**: Enforces inclusion criteria for new models and strictly classifies datasets—preventing private hospital cohorts from polluting the global benchmark tables while certifying legitimate public 3D benchmarks.
+  3. **`DatabaseAgent` (Curator Engine)**: Performs entity deduplication against SQLite, writes atomic records to `models` and `datasets`, and manages safe dynamic schema evolution (`ALTER TABLE results_primary ADD COLUMN ...`) with transaction rollbacks.
+* **Next Steps**: Step-by-step progression: complete Phase 3.2 (Delegation Layer: `RepoInspector` & `OutreachAgent`) before proceeding to Phase 3.3 operational code.
+
+### 6. Empirical 15-Paper Batch Benchmark & Audit Refinement (2026-09-24)
+* **Scope**: Automated batch extraction and multi-level audit evaluated across all 15 cached survey manuscripts (`KnowSAM`, `IMIS-Net`, `TP-Mamba`, `MedSAM-2`, `BioSAM-2`, `FLAP-SAM`, `Merlin`, `BrainSegFounder`, `TotalSegmentator MRI`, `MoME`, `BiomedParse`, `LHU-Net`, `SFR SAM`, `MEA M-SAM`, `SAT`).
+* **5 Critical Pathologies Uncovered & Systematically Resolved**:
+  1. **Merlin Pydantic Crash**: In papers reporting metrics exclusively via bar plots, extracting non-scalar dataset mentions raised `ValueError: Dice score cannot be None`. Fixed by transitioning `RawExtractedScore.dice_score` to `Optional[float] = None`, allowing graceful degradation to `NEEDS_OUTREACH` without pipeline failure.
+  2. **KnowSAM False Rejection**: The extractor marked `is_3d = False` because the authors performed 2D slice inference on ACDC cardiac MRI. Fixed by equipping `AuditorAgent` with clinical domain knowledge: when evaluation occurs on canonical 3D radiological benchmarks (ACDC, BraTS, BTCV, AMOS, KiTS), the Critic overrides slice-level confusion and certifies 3D compliance (`passed_screening = True`).
+  3. **SFR SAM & FLAP-SAM Confidence Collapse**: Multiple evaluation scores across labeled data ratios (1%, 5%, 10%, 20%, 100%) were falsely flagged as "conflicting duplicate contradictions", plunging confidence to 0% despite 0.0000 MAE. Fixed by recognizing series of $\ge 3$ scores as legitimate experimental sweeps, restricting duplicate warnings to pairwise contradictions (> 0.03 DSC), and capping warning deductions to max 0.35.
+  4. **BiomedParse Primary Table Triage**: Sparse ablation scores in running text masked the absence of primary comparative benchmark tables. Fixed by verifying table provenance: when scalar scores lack formal table origins and a GitHub repository is present, the Auditor correctly triggers `NEEDS_REPO_INSPECTION`.
+  5. **SAT Appendix Table Starvation**: In 74-page foundation model papers, dense benchmark tables (pages 40–60) were starved by heuristics prioritizing main-body text mentions. Fixed via a dual-pillar scoring engine combining structural table header regexes (`Table \d+ [|:.]`) (+35 pts) with multi-digit percentage density (+40 pts).
+* **Test Suite Expansion**: Expanded `tests/test_auditor.py` to **30 unit tests** (all passing in 0.48s) with 100% regression protection.
+
+---
+
+### 7. Dual Cloud-HPC Infrastructure: Google 503 Resiliency & Mufasa Open-Source LLM Setup (2026-09-28)
+* **Context & Problem**: During high-concurrency batch execution across 15 papers on Google AI Studio Free Tier, transient server-side demand spikes triggered `503 UNAVAILABLE` errors. Subsequent probe revealed that preview models (`gemini-3.6-flash`, `gemini-3.8-flash`) are restricted to a 20 requests/day quota, whereas production `flash-lite` models allow 1,500 requests/day but occasionally experience peak traffic congestion.
+* **Engineering Solutions Implemented**:
+  1. **Client Resiliency & Telemetry (`src/agent_gmmis/llm/client.py`)**:
+     * Implemented transparent retry logging: prints clear countdown timestamps and backoff delays (`⚠️ [Google AI Studio 503 High Demand] Retrying...`) to prevent perceived process hanging.
+     * Integrated automated fallback model switching (`gemini-3.5-flash-lite` -> `gemini-3.5-flash` -> `gemini-flash-latest`).
+     * Disabled unneeded Automatic Function Calling (`automatic_function_calling=False`) to silence recurring SDK runtime warnings.
+  2. **Budget-Aware Page Selection (`src/agent_gmmis/extraction/extractor.py`)**:
+     * Bound input snippet payload to a strict 45,000 character limit, including pages 1-2 (metadata) and highest-scoring table pages while naturally discarding voluminous references and bibliography pages that inflated short manuscripts (e.g. KnowSAM) to 64k characters.
+  3. **DEIB Mufasa GPU Cluster Open-Source Inference Engine**:
+     * Hardware Profile: Configured for Politecnico di Milano DEIB Mufasa cluster MIG slices (`--gres=gpu:3g.20gb:1`, 20 GB VRAM, 32 GB RAM).
+     * Model Selection: Chose `Qwen/Qwen2.5-14B-Instruct-AWQ` (4-bit AWQ, ~9.2 GB VRAM footprint, leaving 10.8 GB KV cache for 32k-token papers; benchmark leader in structured JSON extraction).
+     * Server Architecture: Deployed via `vLLM` high-throughput engine exposing an OpenAI-compatible HTTP server (`http://localhost:8000/v1`).
+     * SLURM Scripts Created (`scripts/mufasa/`):
+       * `download_model.sh`: Automated Hugging Face weight caching.
+       * `start_vllm.sh`: Dedicated vLLM server launch.
+       * `run_benchmark_mufasa.sh`: All-in-one autonomous SLURM batch job (server start, health check loop, batch benchmark execution, graceful cleanup).
+     * Universal Client Support: Enhanced `LLMClient` to automatically detect `--provider mufasa` and route requests to `http://localhost:8000/v1` with fallback JSON-object schema decoding.
+* **Verification**: All 30 unit tests continue to pass in 0.49s. Full documentation updated in `README.md` and thesis design logs.
+
+
+

@@ -6,8 +6,8 @@ Moglia et al., "Generalist models in medical image segmentation: A survey and pe
 
 Follow these strict extraction guidelines:
 1. INCLUSION/EXCLUSION SCREENING:
-   - Check if the paper evaluates 3D radiological volumes (CT, MRI, PET). Exclude 2D-only modalities (retina, dermoscopy, standard ultrasound).
-   - Check if public datasets are used (e.g. BraTS, AMOS, BTCV, KiTS, LiTS, TotalSegmentator). Exclude private/hospital-only datasets.
+   - Check if the paper evaluates 3D radiological volumes (CT, MRI, PET). If a model evaluates on 3D volumetric medical scans (such as 3D CT or 3D MRI like ACDC, BraTS, BTCV) via 2D slice-by-slice inference, it IS considered a valid 3D radiological evaluation (is_3d=True). Only set is_3d=False if the underlying data domain is purely 2D (e.g. 2D fundus photography, 2D dermoscopy, 2D microscopy).
+   - Check if public datasets are used (e.g. BraTS, AMOS, BTCV, KiTS, LiTS, TotalSegmentator, ACDC). Exclude private/hospital-only datasets.
    - Confirm that the Dice Similarity Coefficient (DSC) is reported.
 
 2. MODEL SPECIFICATIONS:
@@ -25,10 +25,10 @@ Follow these strict extraction guidelines:
    - Identify the canonical dataset name and target organ/task. When a paper mentions challenge datasets under generic organ or modality labels, resolve them to their standard canonical challenge name if disclosed in the text (e.g. "Abdomen CT" / FLARE -> "FLARE", "Abdomen MR" / AMOS -> "AMOS", "Synapse" / Beyond the Cranial Vault -> "BTCV", "BraTS21" -> "BraTS", "ATLAS v2.0" -> "ATLAS v2.0", "Prost.MRI" / PROMISE12 -> "PROMISE12", "Fed-KiTS" -> "KiTS", "TotalSegmentator" -> "TotalSegmentator").
    - PROMPT REGIMES (CRUCIAL): For promptable/interactive models (e.g. SAM-based architectures), tables often report performance across multiple prompt settings (e.g. "1 pt", "3 pts", "5 pts", "10 pts", "bounding box"). Always extract each setting and set `prompt_type` (e.g. "1 point", "10 points", "box"). Crucially ensure the single-point baseline ("1 point") is extracted, as survey comparisons standardize on 1-point prompts!
    - MULTI-MODALITY & TEST SETS: If a table reports results across multiple modalities (e.g. T1, T2, T1ce, FLAIR) or multiple test sets (e.g. MRI test set vs CT test set in TotalSegmentator), extract each score and also the overall mean if reported.
-   - DATA PARTITIONS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM), tables report varying amounts of labeled data (e.g. 5%, 10%, 100%) or learning settings (Federated vs Centralized). Extract each setting (e.g. "Federated", "Centralized", "10% labeled") so standard comparisons can be performed.
+   - DATA PARTITIONS & BUDGETS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM, SFR SAM), tables report varying amounts of labeled data (e.g. 1%, 5%, 10%, 100%) or learning settings (Federated vs Centralized, Communication rounds). Always extract each setting and record it in `data_budget_or_setting` (e.g. "10% labeled", "1% labeled", "5 clients") so multiple legitimate experimental regimes are distinguished from duplicate contradictions!
 
 4. ACCURACY AND HONESTY:
-   - Do NOT guess or hallucinate numbers. If a parameter or metric is not disclosed in the text or tables, set it to None.
+   - Do NOT guess or hallucinate numbers. If a parameter or metric is not disclosed in the text or tables, set it to None. If a dataset is mentioned only in a graphical plot without exact numbers, set dice_score to None.
 """
 
 EXTRACTION_USER_PROMPT_TEMPLATE = """Please parse and extract structured benchmarking data from the following academic manuscript text and tables:

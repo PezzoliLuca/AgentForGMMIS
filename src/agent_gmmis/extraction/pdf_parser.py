@@ -87,17 +87,21 @@ class PDFParser:
             else:
                 score += len(metrics) * 4
 
+            # Detect actual table header structures (e.g. "Table 5 |", "Table 2:", "Table 1.")
+            if re.search(r"\btable\s+\d+\s*(?:[:|.]|\s*--|\s*\n)", text_lower):
+                score += 35
+
             # 2. Benchmark and comparison terminology
             bench = re.findall(r"\b(benchmark|comparison|baseline|sota|state-of-the-art|test set|validation set|cross-validation)\b", text_lower)
             score += len(bench) * 2
 
-            # 3. Dense numerical reporting (e.g. 0.8420, 88.5%)
-            decimals = re.findall(r"\b0\.\d{3,4}\b", text_lower)
-            score += min(len(decimals), 10)
+            # 3. Dense numerical reporting (e.g. 0.8420, 88.5%, 72.3)
+            numbers = re.findall(r"\b(?:\d{1,2}\.\d{1,2}|0\.\d{3,4})\b", text_lower)
+            score += min(len(numbers), 40)
 
-            # 4. Main manuscript priority: the primary methodology & evaluation tables reside in main body (pages <= 25)
+            # 4. Main manuscript priority: modest bonus for main body (pages <= 25)
             if page_num <= 25 and score > 0:
-                score += 15
+                score += 10
 
             page_scores[page_num] = score
 

@@ -35,10 +35,19 @@ class DatabaseManager:
             return [ModelMetadata(**dict(row)) for row in rows]
 
     def get_model(self, model_id: str) -> Optional[ModelMetadata]:
-        """Retrieves a single model by its ID."""
+        """Retrieves a single model by its ID (exact or case-insensitive/partial fallback)."""
         with self._get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM models WHERE ID = ?;", (model_id,))
+            row = cursor.fetchone()
+            if row:
+                return ModelMetadata(**dict(row))
+
+            # Case-insensitive / partial fallback (e.g. 'MedSAM-2' matches 'Medical SAM 2 (MedSAM-2)')
+            cursor.execute(
+                "SELECT * FROM models WHERE LOWER(ID) = LOWER(?) OR LOWER(ID) LIKE LOWER(?) OR LOWER(Title) LIKE LOWER(?);",
+                (model_id, f"%{model_id}%", f"%{model_id}%"),
+            )
             row = cursor.fetchone()
             if row:
                 return ModelMetadata(**dict(row))
@@ -88,11 +97,14 @@ class DatabaseManager:
         Returns: { dataset_name: { 'primary': float, 'best': float } }
         """
         results: Dict[str, Dict[str, Optional[float]]] = {}
+        model = self.get_model(model_id)
+        target_id = model.id if model else model_id
+
         with self._get_connection() as conn:
             cursor = conn.cursor()
 
             # Primary scores
-            cursor.execute("SELECT * FROM results_primary WHERE ID = ?;", (model_id,))
+            cursor.execute("SELECT * FROM results_primary WHERE ID = ?;", (target_id,))
             primary_row = cursor.fetchone()
             if primary_row:
                 for col in primary_row.keys():
@@ -102,7 +114,7 @@ class DatabaseManager:
                             results.setdefault(col, {})["primary"] = round(float(val), 4)
 
             # Best scores
-            cursor.execute("SELECT * FROM results_best WHERE ID = ?;", (model_id,))
+            cursor.execute("SELECT * FROM results_best WHERE ID = ?;", (target_id,))
             best_row = cursor.fetchone()
             if best_row:
                 for col in best_row.keys():
@@ -135,6 +147,39 @@ class DatabaseManager:
             except sqlite3.OperationalError:
                 # Column does not exist in table
                 return []
+
+    def get_dataset_statistics(
+        self,
+        dataset_name: str,
+        category: ScoreCategory = ScoreCategory.BEST,
+    ) -> Optional[Dict[str, float]]:
+        """
+        Calculates aggregate statistics for a given dataset column across historical models.
+        Returns values normalized to [0.0, 1.0]:
+        { 'min': float, 'max': float, 'mean': float, 'count': int }
+        or None if dataset column doesn't exist or has 0 entries.
+        """
+        table = "results_best" if category == ScoreCategory.BEST else "results_primary"
+        query = f'SELECT MIN("{dataset_name}"), MAX("{dataset_name}"), AVG("{dataset_name}"), COUNT("{dataset_name}") FROM {table} WHERE "{dataset_name}" IS NOT NULL;'
+
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute(query)
+                row = cursor.fetchone()
+                if not row or row[3] == 0 or row[0] is None:
+                    return None
+                min_v = float(row[0]) / 100.0 if float(row[0]) > 1.0 else float(row[0])
+                max_v = float(row[1]) / 100.0 if float(row[1]) > 1.0 else float(row[1])
+                mean_v = float(row[2]) / 100.0 if float(row[2]) > 1.0 else float(row[2])
+                return {
+                    "min": round(min_v, 4),
+                    "max": round(max_v, 4),
+                    "mean": round(mean_v, 4),
+                    "count": int(row[3]),
+                }
+            except sqlite3.OperationalError:
+                return None
 
     # ---------------------------------------------------------
     # Insert / Upsert (For Downstream Database Agent)

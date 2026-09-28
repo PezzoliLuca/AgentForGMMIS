@@ -10,8 +10,15 @@ class RawExtractedScore(BaseModel):
 
     dataset_name: str = Field(..., description="Name of dataset as mentioned in the paper (e.g. BraTS, BTCV, AMOS)")
     organ_or_task: str = Field(..., description="Target anatomy or lesion (e.g. Liver, Brain Tumor, Multi-organ mean)")
-    dice_score: float = Field(..., description="Dice Similarity Coefficient, normalized to [0.0, 1.0]")
+    dice_score: Optional[float] = Field(
+        None,
+        description="Dice Similarity Coefficient, normalized to [0.0, 1.0]. None if only reported graphically without numerical value.",
+    )
     table_or_section_ref: Optional[str] = Field(None, description="Source table or section (e.g. Table 2, Table 3)")
+    data_budget_or_setting: Optional[str] = Field(
+        None,
+        description="Data budget or experimental setting if semi-supervised, few-shot, or ablation (e.g. '10% labeled', '1% labeled', 'centralized')",
+    )
     is_baseline_comparison: bool = Field(
         False,
         description="True if this row reports a baseline/competitor score; False if it is the proposed model",
@@ -27,9 +34,9 @@ class RawExtractedScore(BaseModel):
 
     @field_validator("dice_score", mode="before")
     @classmethod
-    def normalize_score(cls, v: float) -> float:
+    def normalize_score(cls, v: Optional[float]) -> Optional[float]:
         if v is None:
-            raise ValueError("Dice score cannot be None")
+            return None
         val = float(v)
         if val > 1.0 and val <= 100.0:
             val = val / 100.0

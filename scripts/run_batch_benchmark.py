@@ -111,14 +111,20 @@ def main():
         print(f"Log File:        {log_path}")
         print("=" * 80)
 
-        llm_config = LLMConfig(
-            provider=args.provider or "gemini",
-            model=args.model or "gemini-3.5-flash-lite",
-        )
+        config_kwargs = {}
+        if args.provider:
+            config_kwargs["provider"] = args.provider
+        if args.model:
+            config_kwargs["model"] = args.model
+        llm_config = LLMConfig(**config_kwargs)
         llm_client = LLMClient(config=llm_config)
         agent = ExtractionAgent(llm_client=llm_client)
         evaluator = ExtractionEvaluator(db_manager=db)
 
+        from agent_gmmis.auditing.auditor import AuditorAgent
+        from agent_gmmis.extraction.pdf_parser import PDFParser
+
+        auditor = AuditorAgent(db_manager=db)
         summary_rows = []
         detailed_reports = []
 
@@ -127,21 +133,26 @@ def main():
             t0 = time.time()
             try:
                 pdf_path = fetcher.fetch_for_model(model_id)
-                extracted = agent.process_pdf(pdf_path)
+                manuscript = PDFParser.parse(pdf_path)
+                extracted = agent.process_manuscript(manuscript)
+                audit_report = auditor.audit(extracted, manuscript=manuscript)
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 
                 dice_mae_str = f"{report.dice_mae:.4f}" if report.dice_mae is not None else "N/A"
-                code_match_str = "✅ Yes" if report.code_url_match else ("❌ No" if report.code_url_match is False else "N/A")
+                audit_status_badge = (
+                    "✅ VERIFIED"
+                    if audit_report.status.value == "verified"
+                    else ("⚠️ " + audit_report.status.value.upper())
+                )
 
                 summary_rows.append([
                     model_id,
-                    "✅ Pass",
+                    audit_status_badge,
+                    f"{audit_report.confidence_score * 100:.0f}%",
                     f"{report.matched_datasets_count}/{report.ground_truth_datasets_count}",
-                    f"{report.dataset_precision:.1%}",
                     f"{report.dataset_recall:.1%}",
                     dice_mae_str,
-                    code_match_str,
                     f"{elapsed:.1f}s",
                 ])
 
@@ -149,35 +160,44 @@ def main():
                     "model_id": model_id,
                     "report": report,
                     "extracted": extracted,
+                    "audit_report": audit_report,
                     "elapsed": elapsed,
                     "pdf_name": pdf_path.name,
                 })
 
-                print(f"   ✅ Done in {elapsed:.1f}s — Scores Extracted: {len(extracted.extracted_scores)}, Matched: {report.matched_datasets_count}/{report.ground_truth_datasets_count}, Dice MAE: {dice_mae_str}")
+                audit_notes = []
+                if audit_report.discrepancies:
+                    audit_notes.append(f"{len(audit_report.discrepancies)} survey typo/discrepancies")
+                if audit_report.outliers:
+                    audit_notes.append(f"{len(audit_report.outliers)} outliers")
+                if audit_report.data_diagnosis.value != "none":
+                    audit_notes.append(f"diagnosis: {audit_report.data_diagnosis.value}")
+                notes_str = f" — Audit: [{', '.join(audit_notes)}]" if audit_notes else ""
+
+                print(f"   ✅ Done in {elapsed:.1f}s — Audit: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%) — Scores: {len(extracted.extracted_scores)}, Matched: {report.matched_datasets_count}/{report.ground_truth_datasets_count}, Dice MAE: {dice_mae_str}{notes_str}")
 
             except Exception as e:
                 elapsed = time.time() - t0
                 print(f"   ❌ Error processing {model_id}: {e}")
                 summary_rows.append([
                     model_id,
-                    "❌ Error",
+                    "❌ ERROR",
+                    "0%",
                     "0/0",
                     "0.0%",
-                    "0.0%",
-                    "N/A",
                     "N/A",
                     f"{elapsed:.1f}s",
                 ])
 
             # Polite pause between papers to stay well within free tier burst limits
             if idx < len(target_model_ids):
-                time.sleep(2.0)
+                time.sleep(3.5)
 
         # Print Aggregated Summary Table to console and log
         print("\n" + "=" * 80)
-        print("📊 BATCH BENCHMARK AGGREGATED REPORT")
+        print("📊 BATCH BENCHMARK & AUDIT AGGREGATED REPORT")
         print("=" * 80)
-        headers = ["Model ID", "Status", "Datasets Matched", "Precision", "Recall", "Dice MAE", "Code Match", "Time"]
+        headers = ["Model ID", "Audit Status", "Confidence", "Datasets Matched", "Recall", "Dice MAE", "Time"]
         summary_table_str = tabulate(summary_rows, headers=headers, tablefmt="github")
         print(summary_table_str)
 
@@ -210,8 +230,18 @@ def main():
             md_lines.append(f"- **PDF File**: `{item['pdf_name']}` (cached)")
             md_lines.append(f"- **Visual Backbone**: {ext.visual_backbone or 'N/A'}")
             md_lines.append(f"- **Repository URL**: {ext.code_repository_url or 'N/A'}")
-            md_lines.append(f"- **Scores Extracted**: {len(ext.extracted_scores)}")
             md_lines.append(f"- **Execution Time**: {elap:.1f}s")
+            if "audit_report" in item:
+                ar = item["audit_report"]
+                md_lines.append(f"- **Audit Status**: `{ar.status.value.upper()}` (Confidence: {ar.confidence_score*100:.1f}%)")
+                if ar.anomalies:
+                    md_lines.append(f"- **Anomalies**: {'; '.join(a.message for a in ar.anomalies)}")
+                if ar.outliers:
+                    md_lines.append(f"- **Outliers**: {'; '.join(o.reason or '' for o in ar.outliers)}")
+                if ar.discrepancies:
+                    md_lines.append(f"- **Survey Discrepancies**: {'; '.join(d.message for d in ar.discrepancies)}")
+                if ar.data_diagnosis.value != "none":
+                    md_lines.append(f"- **Missing Data Diagnosis**: `{ar.data_diagnosis.value}`")
             md_lines.append("")
             if rep.score_comparisons:
                 md_lines.append("#### Benchmark Table Matches vs. Ground Truth:")

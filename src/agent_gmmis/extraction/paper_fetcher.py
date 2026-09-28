@@ -83,7 +83,7 @@ class PaperFetcher:
             # Try fuzzy search in models
             all_models = self.db.get_all_models()
             for m in all_models:
-                if model_id_or_name.lower() in m.model_id.lower() or (m.title and model_id_or_name.lower() in m.title.lower()):
+                if model_id_or_name.lower() in m.id.lower() or (m.title and model_id_or_name.lower() in m.title.lower()):
                     model = m
                     break
 
@@ -92,12 +92,12 @@ class PaperFetcher:
 
         link = model.first_publication_link or model.last_publication_link
         if not link:
-            raise ValueError(f"Model '{model.model_id}' does not have a publication link recorded in database.sqlite")
+            raise ValueError(f"Model '{model.id}' does not have a publication link recorded in database.sqlite")
 
         arxiv_id = self.extract_arxiv_id(link)
         if not arxiv_id:
             raise ValueError(
-                f"Model '{model.model_id}' links to '{link}', which is not an arXiv preprint (direct publisher download requires institutional access)."
+                f"Model '{model.id}' links to '{link}', which is not an arXiv preprint (direct publisher download requires institutional access)."
             )
 
         return self.fetch_arxiv(arxiv_id, force_download=force_download)
