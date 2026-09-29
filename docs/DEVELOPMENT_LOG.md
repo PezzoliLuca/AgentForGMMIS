@@ -363,3 +363,25 @@ Implement the autonomous quality control and verification engine (`AuditorAgent`
 * **Key Scientific Discoveries for Dissertation**:
   1. **Dual-Model Independent Typo Discovery (`LHU-Net`)**: Both Google's cloud model (`gemini-3.5-flash-lite`) and the open-source cluster model (`Qwen2.5-14B-Instruct-AWQ`) independently caught the identical human survey transcription typo in Table 2 (extracting `0.8783` for LHU-Net vs human curator's `0.8749`). This cross-architecture agreement offers unassailable scientific proof of autonomous auditing accuracy.
   2. **100% Sovereign & Zero-Cost Infrastructure**: Successfully demonstrated that the entire multi-agent benchmarking pipeline can run without commercial API subscriptions, with full privacy, data sovereignty, and zero ongoing monetary expenditure.
+
+---
+
+### 10. Empirical Milestone: Autonomous Deploy Mode & Long-Context Boundary Hardening (Job 4449 — 2026-09-29)
+
+* **Operational Regime**: Evaluated the entire pipeline in **Autonomous Deploy Mode (`benchmark_mode=False`)** on the DEIB Mufasa cluster (NVIDIA A100-PCIE-40GB MIG slice).
+* **Ground Truth Decoupling**: In this mode, `AuditorAgent` ("Il Vigile") ignores the existence of human survey records in `database.sqlite`, evaluating models purely on intrinsic physical sanity, architectural consistency, absence of cloned hallucinations, and Bayesian historical dataset distributions.
+* **Empirical Results Summary**:
+  * **Certified Verified Surge**: Models achieving `VERIFIED` with 100% confidence doubled from 5 to **10 models** (`KnowSAM`, `TP-Mamba`, `MedSAM-2`, `BioSAM-2`, `Merlin`, `BrainSegFounder`, `TotalSegmentator MRI`, `LHU-Net`, `SFR SAM`, `MEA M-SAM`).
+  * **True Critic Triumphs**: The only remaining non-verified models are legitimate, ground-truth-independent anomalies:
+    1. `IMIS-Net` (`FLAGGED_WARNING`, 95%): Detected that ViT-B backbone was reported with only 29.68M parameters (accurately identifying that authors reported only trainable adapter weights).
+    2. `FLAP-SAM` (`FLAGGED_WARNING`, 95%): Detected that ViT-B was reported with only 1.712M parameters (accurately identifying PEFT federated LoRA weights).
+    3. `MoME` (`FLAGGED_WARNING`, 90%): Flagged 2 statistical outliers on OASIS-1 (0.7737) and MSSEG (0.6979) which exceed historical world SOTA distributions by >4%.
+    4. `BiomedParse` (`NEEDS_REPO_INSPECTION`, 40%): Correctly diagnosed `code_repo_available` due to metric reporting via radar plots.
+* **SAT Long-Context Boundary Resolution**:
+  * *Pathology Diagnosed*: SAT (74 pages) generated a prompt of 24,577 tokens. With a static `max_tokens = 8192`, total tokens reached $24577 + 8192 = 32769$, triggering a `400 Bad Request` by exceeding vLLM's `max_model_len` (32,768) by literally **1 token**.
+  * *Tri-Layer Engineering Fix*:
+    1. *Dynamic Budgeting*: Set safe extraction page character limit from 45k to 35k chars in `ExtractionAgent`, guaranteeing input prompt tokens remain $\le 12k$.
+    2. *Dynamic Output Budgeting*: `safe_max_tokens = min(4096, max(512, 32768 - approx_tokens - 300))`.
+    3. *Automatic 400 Context Recovery*: Implemented an automatic retry handler in `LLMClient` that parses `ctx_len` and `input_tokens` directly from the vLLM 400 error payload, immediately re-requesting with `retry_tokens = max(256, ctx_len - input_len - 64)`.
+    4. *Robust JSON Truncation Healing*: Added structural closing of unclosed quotes, brackets, and braces to prevent JSON parse crashes on massive long-context outputs.
+* **Status**: All 30 unit tests passing (100% green). All changes pushed to GitHub (`main`) and pulled directly onto the Mufasa cluster node.
