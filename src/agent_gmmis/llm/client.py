@@ -170,23 +170,27 @@ class LLMClient:
         # Calculate dynamic safe output token budget to ensure prompt + completion never exceeds 32k
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
         approx_tokens = int(total_chars / 2.8) + 400
-        safe_max_tokens = min(4096, max(512, 32768 - approx_tokens - 300))
+        safe_max_tokens = min(8192, max(1024, 32768 - approx_tokens - 300))
 
-        try:
-            completion = self._openai_client.beta.chat.completions.parse(
-                model=self.config.model,
-                messages=messages,
-                response_format=response_model,
-                temperature=self.config.temperature,
-                max_tokens=safe_max_tokens,
-            )
-            parsed = completion.choices[0].message.parsed
-            if parsed is not None:
-                return parsed
-        except Exception:
-            pass
+        # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
+        use_beta_parse = self.config.provider not in ("mufasa", "ollama")
 
-        # Fallback for inference servers (vLLM / Ollama) without native .beta.parse support
+        if use_beta_parse:
+            try:
+                completion = self._openai_client.beta.chat.completions.parse(
+                    model=self.config.model,
+                    messages=messages,
+                    response_format=response_model,
+                    temperature=self.config.temperature,
+                    max_tokens=safe_max_tokens,
+                )
+                parsed = completion.choices[0].message.parsed
+                if parsed is not None:
+                    return parsed
+            except Exception:
+                pass
+
+        # Robust JSON-object Schema prompt for vLLM / Mufasa / Ollama
         schema_json = json.dumps(response_model.model_json_schema(), indent=2)
         augmented_messages = [dict(m) for m in messages]
         augmented_messages[0]["content"] += f"\n\nYou MUST respond with a valid JSON object strictly conforming to this JSON Schema:\n{schema_json}"
@@ -231,14 +235,30 @@ class LLMClient:
         try:
             return response_model.model_validate_json(raw_text)
         except Exception:
-            # Robust healing if JSON was cut off near the end
-            repaired = raw_text.strip()
-            if repaired.count('"') % 2 != 0:
-                repaired += '"'
-            open_sq = repaired.count('[') - repaired.count(']')
-            open_cur = repaired.count('{') - repaired.count('}')
-            repaired += (']' * max(0, open_sq)) + ('}' * max(0, open_cur))
-            return response_model.model_validate_json(repaired)
+            # Bulletproof healing: if JSON was truncated inside an array of benchmark objects,
+            # rewind to the last completely formed object '}' and close open brackets properly
+            s = raw_text.strip()
+            last_brace = s.rfind("}")
+            if last_brace != -1:
+                truncated = s[:last_brace + 1]
+                open_sq = truncated.count("[") - truncated.count("]")
+                open_cur = truncated.count("{") - truncated.count("}")
+                candidate = truncated + ("]" * max(0, open_sq)) + ("}" * max(0, open_cur))
+                try:
+                    return response_model.model_validate_json(candidate)
+                except Exception:
+                    pass
+
+            # Fallback quote balancing
+            if s.count('"') % 2 != 0:
+                s += '"'
+            last_comma = s.rfind(",")
+            if last_comma != -1:
+                s = s[:last_comma]
+            open_cur = s.count("{") - s.count("}")
+            open_sq = s.count("[") - s.count("]")
+            candidate = s + ("}" * max(0, open_cur - 1)) + ("]" * max(0, open_sq)) + "}"
+            return response_model.model_validate_json(candidate)
 
     def generate_text(
         self,

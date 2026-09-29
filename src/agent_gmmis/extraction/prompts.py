@@ -44,4 +44,5 @@ Total Pages: {total_pages}
 {content}
 
 Extract the complete structured output conforming to the required schema.
+Prioritize the primary comparative benchmark tables of the proposed model (extract up to the top 25 key evaluation benchmark scores).
 """
