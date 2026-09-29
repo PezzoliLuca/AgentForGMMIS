@@ -71,6 +71,12 @@ def main():
         default="logs",
         help="Directory where logs and markdown reports will be saved (default: logs)",
     )
+    parser.add_argument(
+        "--audit-ground-truth",
+        action="store_true",
+        default=False,
+        help="If set, AuditorAgent cross-checks extracted values against human survey ground truth in SQLite (benchmark mode). Default: False (autonomous deploy mode).",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)
@@ -139,7 +145,7 @@ def main():
                 pdf_path = fetcher.fetch_for_model(model_id)
                 manuscript = PDFParser.parse(pdf_path)
                 extracted = agent.process_manuscript(manuscript)
-                audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=True)
+                audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=args.audit_ground_truth)
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 
@@ -206,11 +212,17 @@ def main():
         print(summary_table_str)
 
         # Write detailed Markdown Report
+        auditor_mode_desc = (
+            "Benchmark Ground Truth Cross-Check"
+            if args.audit_ground_truth
+            else "Autonomous Deploy Mode (Zero Ground Truth)"
+        )
         md_lines = [
             "# Batch Extraction Benchmark Report",
             "",
             f"- **Execution Date**: `{start_time_iso}`",
             f"- **LLM Provider**: `{args.provider or 'gemini'}` (`{args.model or 'gemini-3.5-flash-lite'}`)",
+            f"- **Auditor Mode**: `{auditor_mode_desc}`",
             f"- **Evaluation Baseline**: `{args.compare_source.upper()}` Survey Ground Truth",
             f"- **Total Papers Evaluated**: {len(target_model_ids)}",
             "",
