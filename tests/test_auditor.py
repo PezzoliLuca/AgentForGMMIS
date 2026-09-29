@@ -189,7 +189,7 @@ class TestAuditorAgent:
             ],
         )
 
-        report = auditor.audit(data)
+        report = auditor.audit(data, benchmark_mode=True)
         # In database.sqlite, LHU-Net on BTCV is recorded as 87.49% (from baseline TransUNet column)
         assert len(report.discrepancies) > 0
         assert report.discrepancies[0].dataset_name == "BTCV"

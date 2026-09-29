@@ -139,7 +139,7 @@ def main():
                 pdf_path = fetcher.fetch_for_model(model_id)
                 manuscript = PDFParser.parse(pdf_path)
                 extracted = agent.process_manuscript(manuscript)
-                audit_report = auditor.audit(extracted, manuscript=manuscript)
+                audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=True)
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 

@@ -51,6 +51,7 @@ class AuditorAgent:
         self,
         extracted: ExtractedPaperData,
         manuscript: Optional[ParsedManuscript] = None,
+        benchmark_mode: bool = False,
     ) -> AuditReport:
         """
         Performs comprehensive multi-dimensional audit of extracted paper data.
@@ -58,6 +59,11 @@ class AuditorAgent:
         Args:
             extracted: Raw extracted structured data from ExtractionAgent.
             manuscript: Optional ParsedManuscript to diagnose missing tables/figures.
+            benchmark_mode: If True, compares extracted values against human survey
+                ground truth in SQLite to compute evaluation discrepancies.
+                If False (autonomous deploy mode for new literature / zero-shot DB construction),
+                relies purely on intrinsic physical, architectural, self-consistency,
+                and historical dataset distributions.
 
         Returns:
             AuditReport certifying or flagging the extraction.
@@ -358,50 +364,53 @@ class AuditorAgent:
 
         # -------------------------------------------------------------
         # 4. Human Survey Discrepancy Detection (Ground Truth Cross-Check)
+        # Only active during offline evaluation benchmark to compare vs Moglia et al.
+        # In autonomous deploy mode (new literature / DB construction), benchmark_mode is False.
         # -------------------------------------------------------------
-        gt_scores = self.db.get_scores_for_model(extracted.proposed_model_id)
-        if gt_scores:
-            # Group extracted scores by canonical dataset
-            extracted_by_dataset: Dict[str, List[RawExtractedScore]] = {}
-            for s in extracted.extracted_scores:
-                if not s.is_baseline_comparison and s.dice_score is not None:
-                    c = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name
-                    extracted_by_dataset.setdefault(c, []).append(s)
+        if benchmark_mode:
+            gt_scores = self.db.get_scores_for_model(extracted.proposed_model_id)
+            if gt_scores:
+                # Group extracted scores by canonical dataset
+                extracted_by_dataset: Dict[str, List[RawExtractedScore]] = {}
+                for s in extracted.extracted_scores:
+                    if not s.is_baseline_comparison and s.dice_score is not None:
+                        c = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name
+                        extracted_by_dataset.setdefault(c, []).append(s)
 
-            for d_name, d_scores in gt_scores.items():
-                canon_d = self.alias_resolver.resolve(d_name) or d_name
-                true_val = d_scores.get("primary") or d_scores.get("best")
-                if true_val is not None:
-                    true_dice = round(true_val / 100.0 if true_val > 1.0 else true_val, 4)
+                for d_name, d_scores in gt_scores.items():
+                    canon_d = self.alias_resolver.resolve(d_name) or d_name
+                    true_val = d_scores.get("primary") or d_scores.get("best")
+                    if true_val is not None:
+                        true_dice = round(true_val / 100.0 if true_val > 1.0 else true_val, 4)
 
-                    # Match canon_d or handle Synapse/BTCV equivalence if the other is not in gt_scores
-                    match_key = None
-                    if canon_d in extracted_by_dataset:
-                        match_key = canon_d
-                    elif canon_d.lower() == "synapse" and "BTCV" in extracted_by_dataset and "BTCV" not in gt_scores:
-                        match_key = "BTCV"
-                    elif canon_d.lower() == "btcv" and "Synapse" in extracted_by_dataset and "Synapse" not in gt_scores:
-                        match_key = "Synapse"
+                        # Match canon_d or handle Synapse/BTCV equivalence if the other is not in gt_scores
+                        match_key = None
+                        if canon_d in extracted_by_dataset:
+                            match_key = canon_d
+                        elif canon_d.lower() == "synapse" and "BTCV" in extracted_by_dataset and "BTCV" not in gt_scores:
+                            match_key = "BTCV"
+                        elif canon_d.lower() == "btcv" and "Synapse" in extracted_by_dataset and "Synapse" not in gt_scores:
+                            match_key = "Synapse"
 
-                    if match_key:
-                        cand_scores = [s.dice_score for s in extracted_by_dataset[match_key] if s.dice_score is not None]
-                        if cand_scores:
-                            # Find closest score
-                            closest = min(cand_scores, key=lambda val: abs(val - true_dice))
-                            delta = round(closest - true_dice, 4)
-                            if abs(delta) > 0.0005:
-                                discrepancies.append(
-                                    DiscrepancyNotice(
-                                        dataset_name=match_key,
-                                        extracted_score=closest,
-                                        survey_ground_truth=true_dice,
-                                        delta=delta,
-                                        message=(
-                                            f"Discrepancy on {match_key}: paper reports {closest:.4f}, "
-                                            f"human survey recorded {true_dice:.4f} (diff = {delta:+.4f})"
-                                        ),
+                        if match_key:
+                            cand_scores = [s.dice_score for s in extracted_by_dataset[match_key] if s.dice_score is not None]
+                            if cand_scores:
+                                # Find closest score
+                                closest = min(cand_scores, key=lambda val: abs(val - true_dice))
+                                delta = round(closest - true_dice, 4)
+                                if abs(delta) > 0.0005:
+                                    discrepancies.append(
+                                        DiscrepancyNotice(
+                                            dataset_name=match_key,
+                                            extracted_score=closest,
+                                            survey_ground_truth=true_dice,
+                                            delta=delta,
+                                            message=(
+                                                f"Discrepancy on {match_key}: paper reports {closest:.4f}, "
+                                                f"human survey recorded {true_dice:.4f} (diff = {delta:+.4f})"
+                                            ),
+                                        )
                                     )
-                                )
 
         # -------------------------------------------------------------
         # 5. Missing Data Diagnosis

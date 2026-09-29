@@ -137,8 +137,11 @@ def main():
     print("=" * 70)
     db = DatabaseManager(DEFAULT_DB_PATH)
     auditor = AuditorAgent(db_manager=db)
-    manuscript = PDFParser.parse(pdf_file)
-    audit_report = auditor.audit(extracted_data, manuscript=manuscript)
+    audit_report = auditor.audit(
+        extracted_data,
+        manuscript=manuscript,
+        benchmark_mode=bool(args.ground_truth_id),
+    )
 
     status_icon = (
         "✅"
