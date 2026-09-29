@@ -35,9 +35,10 @@ echo "Port:  $PORT"
 echo "Context Limit: $MAX_LEN"
 echo "=========================================="
 
-python -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL_NAME" \
+export VLLM_USE_V1=0
+vllm serve "$MODEL_NAME" \
     --port "$PORT" \
     --max-model-len "$MAX_LEN" \
     --gpu-memory-utilization 0.90 \
+    --enforce-eager \
     --trust-remote-code

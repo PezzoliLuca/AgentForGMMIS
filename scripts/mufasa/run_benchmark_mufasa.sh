@@ -33,12 +33,13 @@ echo "=================================================================="
 nvidia-smi
 
 # 1. Start vLLM background server
+export VLLM_USE_V1=0
 echo "Starting vLLM server on port $PORT..."
-python -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL_NAME" \
+vllm serve "$MODEL_NAME" \
     --port "$PORT" \
     --max-model-len 32768 \
     --gpu-memory-utilization 0.90 \
+    --enforce-eager \
     --trust-remote-code &
 VLLM_PID=$!
 
@@ -47,9 +48,13 @@ trap "kill -9 $VLLM_PID 2>/dev/null" EXIT INT TERM
 
 # 2. Wait for vLLM to initialize (health check loop)
 echo "Waiting for vLLM server to be ready..."
-MAX_WAIT=300
+MAX_WAIT=180
 ELAPSED=0
 until curl -sf http://localhost:$PORT/health > /dev/null || [ $ELAPSED -ge $MAX_WAIT ]; do
+    if ! kill -0 $VLLM_PID 2>/dev/null; then
+        echo "❌ vLLM server process died during startup."
+        exit 1
+    fi
     sleep 5
     ELAPSED=$((ELAPSED + 5))
     echo "   ... waiting for vLLM ($ELAPSED / $MAX_WAIT seconds)"
