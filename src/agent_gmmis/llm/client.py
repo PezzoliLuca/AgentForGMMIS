@@ -167,13 +167,18 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        # Calculate dynamic safe output token budget to ensure prompt + completion never exceeds 32k
+        total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
+        approx_tokens = int(total_chars / 2.8) + 400
+        safe_max_tokens = min(4096, max(512, 32768 - approx_tokens - 300))
+
         try:
             completion = self._openai_client.beta.chat.completions.parse(
                 model=self.config.model,
                 messages=messages,
                 response_format=response_model,
                 temperature=self.config.temperature,
-                max_tokens=8192,
+                max_tokens=safe_max_tokens,
             )
             parsed = completion.choices[0].message.parsed
             if parsed is not None:
@@ -185,19 +190,55 @@ class LLMClient:
         schema_json = json.dumps(response_model.model_json_schema(), indent=2)
         augmented_messages = [dict(m) for m in messages]
         augmented_messages[0]["content"] += f"\n\nYou MUST respond with a valid JSON object strictly conforming to this JSON Schema:\n{schema_json}"
-        response = self._openai_client.chat.completions.create(
-            model=self.config.model,
-            messages=augmented_messages,
-            response_format={"type": "json_object"},
-            temperature=self.config.temperature,
-            max_tokens=8192,
-        )
+        
+        try:
+            response = self._openai_client.chat.completions.create(
+                model=self.config.model,
+                messages=augmented_messages,
+                response_format={"type": "json_object"},
+                temperature=self.config.temperature,
+                max_tokens=safe_max_tokens,
+            )
+        except Exception as exc:
+            # Automatic recovery: if vLLM throws 400 context limit error, extract exact input_tokens and retry
+            err_str = str(exc)
+            if "maximum context length is" in err_str and "parameter=input_tokens" in err_str:
+                import re
+                m_ctx = re.search(r"maximum context length is (\d+)", err_str)
+                m_inp = re.search(r"value=(\d+)", err_str)
+                if m_ctx and m_inp:
+                    ctx_len = int(m_ctx.group(1))
+                    inp_len = int(m_inp.group(1))
+                    retry_tokens = max(256, ctx_len - inp_len - 64)
+                    response = self._openai_client.chat.completions.create(
+                        model=self.config.model,
+                        messages=augmented_messages,
+                        response_format={"type": "json_object"},
+                        temperature=self.config.temperature,
+                        max_tokens=retry_tokens,
+                    )
+                else:
+                    raise exc
+            else:
+                raise exc
+
         raw_text = response.choices[0].message.content or "{}"
         if "```json" in raw_text:
             raw_text = raw_text.split("```json")[1].split("```")[0].strip()
         elif "```" in raw_text:
             raw_text = raw_text.split("```")[1].split("```")[0].strip()
-        return response_model.model_validate_json(raw_text)
+
+        try:
+            return response_model.model_validate_json(raw_text)
+        except Exception:
+            # Robust healing if JSON was cut off near the end
+            repaired = raw_text.strip()
+            if repaired.count('"') % 2 != 0:
+                repaired += '"'
+            open_sq = repaired.count('[') - repaired.count(']')
+            open_cur = repaired.count('{') - repaired.count('}')
+            repaired += (']' * max(0, open_sq)) + ('}' * max(0, open_cur))
+            return response_model.model_validate_json(repaired)
 
     def generate_text(
         self,

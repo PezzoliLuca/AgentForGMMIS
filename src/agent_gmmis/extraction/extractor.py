@@ -23,14 +23,14 @@ class ExtractionAgent:
     def process_manuscript(self, manuscript: ParsedManuscript) -> ExtractedPaperData:
         """Extracts structured benchmark information from a parsed manuscript."""
         # Compose content prioritizing key introduction (pages 1-2 for metadata, backbone, abstract)
-        # and highest-ranked evaluation table pages up to a safe 45,000 character budget
+        # and highest-ranked evaluation table pages up to a safe 35,000 character budget
         pages_to_include = [p for p in (1, 2) if p in manuscript.pages_text]
         current_len = sum(len(manuscript.pages_text[p]) for p in pages_to_include)
 
         for p in (manuscript.table_pages or []):
             if p not in pages_to_include and p in manuscript.pages_text:
                 page_len = len(manuscript.pages_text[p])
-                if current_len + page_len > 45000:
+                if current_len + page_len > 35000:
                     continue
                 pages_to_include.append(p)
                 current_len += page_len
