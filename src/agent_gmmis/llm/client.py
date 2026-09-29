@@ -173,6 +173,7 @@ class LLMClient:
                 messages=messages,
                 response_format=response_model,
                 temperature=self.config.temperature,
+                max_tokens=8192,
             )
             parsed = completion.choices[0].message.parsed
             if parsed is not None:
@@ -189,6 +190,7 @@ class LLMClient:
             messages=augmented_messages,
             response_format={"type": "json_object"},
             temperature=self.config.temperature,
+            max_tokens=8192,
         )
         raw_text = response.choices[0].message.content or "{}"
         if "```json" in raw_text:
