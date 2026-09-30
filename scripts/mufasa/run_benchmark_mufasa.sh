@@ -75,7 +75,8 @@ echo "✅ vLLM Server is LIVE and healthy! Starting Benchmark..."
 python3 -u scripts/run_batch_benchmark.py \
     --provider mufasa \
     --model "$MODEL_NAME" \
-    --count "$COUNT"
+    --count "$COUNT" \
+    "${@:3}"
 
 echo "=================================================================="
 echo "✅ Benchmark Completed on $(date)"
