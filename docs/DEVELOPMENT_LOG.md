@@ -421,4 +421,18 @@ Implement the autonomous quality control and verification engine (`AuditorAgent`
     - Full directory inspection and file deduplication.
     - Empty repository and error handling.
     - End-to-end `inspect_and_update` recovery with `AuditorAgent`.
-  * **Test Results**: **39/39 tests passing across entire repository in 0.43s** (0 regressions).
+  * **Test Results**: **40/40 tests passing across entire repository in 0.50s** (0 regressions).
+
+* **Empirical Validation on DEIB Mufasa Cluster (Job 4501 — BiomedParse)**:
+  * *Paper Pathology*: In Moglia et al., `BiomedParse` is explicitly noted as: *"Results obtained from the original raw segmentation metrics available on BiomedParse's GitHub"*. The PDF (`2405.12971.pdf`) contains only radar plots / figures with no scalar benchmark tables.
+  * *Initial LLM Behavior*: Offline Qwen2.5-14B fabricated 24 scores with repeated identical numbers (`0.9800`, `0.9300`), which `AuditorAgent` intercepted as `cloned_template_hallucination`.
+  * *Tri-Layer Routing & Delegation Resolution*:
+    1. Shortlink redirect resolution added to `RepoInspector.parse_github_url` (`https://aka.ms/biomedparse-project` -> `microsoft/BiomedParse`).
+    2. Missing data routing updated in `AuditorAgent`: when template hallucination is detected but `code_repository_url` is present, the table is treated as absent, diagnosing `MissingDataDiagnosis.CODE_REPO_AVAILABLE` and routing to `AuditStatus.NEEDS_REPO_INSPECTION`.
+    3. Hallucination purging in `RepoInspector.inspect_and_update`: fake repeated scores are purged and replaced with genuine repository scores before re-auditing.
+  * *Benchmark Results on Mufasa (`Qwen/Qwen2.5-14B-Instruct-AWQ`)*:
+    - **Initial Manuscript Status**: `REJECTED (0.0% Recall, 0/14 Datasets, Conf=0%)`.
+    - **Post-Delegation Recovery**: `FLAGGED_WARNING (REPO) (85.7% Recall, 12/14 Datasets, Conf=80%)`.
+    - **Extracted Scores**: 190 quantitative evaluation scores parsed from GitHub JSON/CSV artifacts.
+    - **Dice MAE**: **0.0199** across 12 canonical datasets with 4 exact matches at 0.0000 diff (MSD Lung Tumors, MSD Spleen, MSD Colon Cancer, PROMISE12).
+    - **Execution Time**: 78.7 seconds end-to-end.

@@ -3,7 +3,7 @@
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
 > **Last Updated**: `2026-09-30`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, and **Phase 3.2 Part 1 (`RepoInspector`) Completed & Verified**. Next up: **Phase 3.2 Part 2 (`OutreachAgent`)**.
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, and **Phase 3.2 Part 1 (`RepoInspector`) Completed & Empirically Validated on Mufasa (BiomedParse 85.7% Recall, 0.0199 MAE)**. Next up: **15-Paper Regression Suite & Phase 3.2 Part 2 (`OutreachAgent`)**.
 
 ---
 
@@ -30,8 +30,9 @@
    * Inspects official code repositories for papers lacking scalar tables (`BiomedParse`).
    * Multi-format parsing: Markdown tables (long and wide format), structured JSON artifacts, CSV evaluation logs.
    * Resolves aliases and standardizes scores with `DatasetAliasResolver`.
-   * End-to-end `inspect_and_update` workflow: automatically recovers scores and re-audits paper from `NEEDS_REPO_INSPECTION` to `VERIFIED`.
-   * **39/39 tests passing in <0.45s** with 100% coverage across all modules.
+   * End-to-end `inspect_and_update` workflow: automatically recovers scores and re-audits paper from `NEEDS_REPO_INSPECTION` to `VERIFIED` / `FLAGGED_WARNING`.
+   * **Empirically Validated on DEIB Mufasa Cluster (Job 4501)**: `BiomedParse` benchmarked with `Qwen2.5-14B-Instruct-AWQ` recovered from **0/14 (0.0% Recall)** to **12/14 (85.7% Recall)** with a **0.0199 Dice MAE** and 4 exact dataset matches.
+   * **40/40 tests passing in <0.50s** with 100% coverage across all modules.
 
 ---
 
