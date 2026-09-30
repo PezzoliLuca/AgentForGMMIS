@@ -47,8 +47,8 @@ class RepoInspector:
         self.alias_resolver = alias_resolver or DatasetAliasResolver()
         self.timeout_seconds = timeout_seconds
 
-    @staticmethod
-    def parse_github_url(url: str) -> Optional[Tuple[str, str]]:
+    @classmethod
+    def parse_github_url(cls, url: str) -> Optional[Tuple[str, str]]:
         """Extracts (owner, repo) from a GitHub URL or string.
 
         Supports formats like:
@@ -56,6 +56,7 @@ class RepoInspector:
         - https://github.com/owner/repo.git
         - https://github.com/owner/repo/tree/main/subfolder
         - https://owner.github.io/repo/
+        - Shortlinks like https://aka.ms/biomedparse-project
         - git@github.com:owner/repo.git
 
         Returns:
@@ -71,13 +72,27 @@ class RepoInspector:
             return io_match.group("owner"), io_match.group("repo").rstrip("/")
 
         match = re.search(r"github\.com[/:](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)", clean_url, re.IGNORECASE)
-        if not match:
-            return None
-        owner = match.group("owner")
-        repo = match.group("repo")
-        if repo.endswith(".git"):
-            repo = repo[:-4]
-        return owner, repo
+        if match:
+            owner = match.group("owner")
+            repo = match.group("repo")
+            if repo.endswith(".git"):
+                repo = repo[:-4]
+            return owner, repo
+
+        # Follow redirects for shortlinks (e.g. aka.ms/biomedparse-project)
+        if any(d in clean_url.lower() for d in ("aka.ms", "bit.ly", "tinyurl.com", "t.co", "cutt.ly")):
+            try:
+                import ssl, urllib.request
+                ctx = ssl._create_unverified_context()
+                req = urllib.request.Request(clean_url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
+                    redirected = resp.url
+                    if redirected and redirected != clean_url:
+                        return cls.parse_github_url(redirected)
+            except Exception:
+                pass
+
+        return None
 
     def _ensure_repository(self, repo_url_or_path: str) -> Tuple[Optional[Path], Optional[str]]:
         """Ensures repository files are available locally.
@@ -99,8 +114,12 @@ class RepoInspector:
         owner, repo = parsed
         target_dir = self.cache_dir / f"{owner}_{repo}"
 
-        if target_dir.is_dir() and any(target_dir.iterdir()):
-            return target_dir, None
+        if target_dir.is_dir():
+            if any(p.name != ".git" for p in target_dir.iterdir()):
+                return target_dir, None
+            # Incomplete or broken clone (only .git exists)
+            import shutil
+            shutil.rmtree(target_dir, ignore_errors=True)
 
         clone_url = f"https://github.com/{owner}/{repo}.git"
         logger.info(f"Cloning repository shallowly into {target_dir}...")
@@ -117,12 +136,18 @@ class RepoInspector:
                 check=False,
             )
             if res.returncode != 0:
+                import shutil
+                shutil.rmtree(target_dir, ignore_errors=True)
                 err_msg = res.stderr.strip() or res.stdout.strip()
                 return None, f"Git clone failed (exit code {res.returncode}): {err_msg}"
             return target_dir, None
         except subprocess.TimeoutExpired:
+            import shutil
+            shutil.rmtree(target_dir, ignore_errors=True)
             return None, f"Git clone timed out after {self.timeout_seconds}s"
         except Exception as e:
+            import shutil
+            shutil.rmtree(target_dir, ignore_errors=True)
             return None, f"Unexpected error cloning repository: {str(e)}"
 
     def _find_candidate_files(self, repo_dir: Path) -> List[Path]:
@@ -592,7 +617,22 @@ class RepoInspector:
 
         audit_report = None
         if result.success and result.extracted_scores:
-            # Merge scores avoiding exact duplicates
+            # Purge any LLM template hallucinations (scores repeated 4+ times across tasks)
+            proposed_scores = [
+                s.dice_score for s in extracted.extracted_scores
+                if not s.is_baseline_comparison and s.dice_score is not None
+            ]
+            if len(proposed_scores) >= 4:
+                from collections import Counter
+                counts = Counter(proposed_scores)
+                hallucinated_values = {val for val, count in counts.items() if count >= 4}
+                if hallucinated_values:
+                    extracted.extracted_scores = [
+                        s for s in extracted.extracted_scores
+                        if s.is_baseline_comparison or s.dice_score not in hallucinated_values
+                    ]
+
+            # Merge genuine repo scores avoiding exact duplicates
             existing_keys = {
                 (s.dataset_name.lower(), s.organ_or_task.lower()) for s in extracted.extracted_scores if s.dice_score is not None
             }

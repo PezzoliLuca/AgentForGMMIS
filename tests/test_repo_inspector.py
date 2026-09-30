@@ -236,3 +236,61 @@ class TestRepoInspector:
         assert reaudited_report.status == AuditStatus.VERIFIED
         assert reaudited_report.passed_sanity_checks is True
         assert reaudited_report.confidence_score >= 0.95
+
+    def test_inspect_and_update_with_template_hallucination_recovery(
+        self, inspector: RepoInspector, auditor: AuditorAgent, tmp_path: Path
+    ) -> None:
+        """Validates that if an LLM produced cloned template hallucinations (identical repeated scores)
+        because the paper lacked scalar tables, the Auditor routes to NEEDS_REPO_INSPECTION when code_repo
+        is present, and RepoInspector purges the fake scores, replacing them with authentic repo scores!
+        """
+        # 1. Create mock repo with authentic scores
+        repo_dir = tmp_path / "biomedparse_hallucination_test"
+        repo_dir.mkdir()
+        readme = repo_dir / "README.md"
+        readme.write_text(
+            """
+| Dataset | Organ | Dice |
+| :--- | :--- | :---: |
+| BTCV | Multi-organ | 0.885 |
+| BraTS | Brain | 0.912 |
+| KiTS | Kidney | 0.782 |
+"""
+        )
+
+        # 2. Paper extracted data has 4 identical hallucinated scores (0.9800)
+        paper_data = ExtractedPaperData(
+            paper_title="BiomedParse: A Multimodal Foundation Model",
+            proposed_model_id="BiomedParse",
+            visual_backbone="ViT-B",
+            millions_of_parameters=110.0,
+            code_repository_url=str(repo_dir),
+            screening=InclusionCriteriaCheck(
+                is_3d=True,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[
+                RawExtractedScore(dataset_name="Task1", organ_or_task="Organ1", dice_score=0.98, table_or_section_ref="Table 1"),
+                RawExtractedScore(dataset_name="Task2", organ_or_task="Organ2", dice_score=0.98, table_or_section_ref="Table 1"),
+                RawExtractedScore(dataset_name="Task3", organ_or_task="Organ3", dice_score=0.98, table_or_section_ref="Table 1"),
+                RawExtractedScore(dataset_name="Task4", organ_or_task="Organ4", dice_score=0.98, table_or_section_ref="Table 1"),
+            ],
+        )
+
+        # Initial audit -> NEEDS_REPO_INSPECTION (because code_repo is available despite template hallucination)
+        initial_report = auditor.audit(paper_data)
+        assert initial_report.status == AuditStatus.NEEDS_REPO_INSPECTION
+        assert initial_report.data_diagnosis == MissingDataDiagnosis.CODE_REPO_AVAILABLE
+
+        # 3. Delegation step: inspect_and_update
+        updated_data, reaudited_report = inspector.inspect_and_update(paper_data, auditor=auditor)
+
+        # 4. Check results: fake scores purged, 3 authentic scores present
+        assert len(updated_data.extracted_scores) == 3
+        assert all(s.dice_score != 0.98 for s in updated_data.extracted_scores)
+        assert reaudited_report is not None
+        assert reaudited_report.status == AuditStatus.VERIFIED
+        assert reaudited_report.passed_sanity_checks is True
+        assert reaudited_report.confidence_score >= 0.95

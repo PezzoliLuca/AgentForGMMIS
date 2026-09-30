@@ -269,6 +269,7 @@ class AuditorAgent:
                 )
 
         # 2g. Suspiciously Identical / Cloned Scores (Template Hallucination Check)
+        has_cloned_template_hallucination = False
         proposed_scores = [s.dice_score for s in extracted.extracted_scores if not s.is_baseline_comparison and s.dice_score is not None]
         if len(proposed_scores) >= 4:
             from collections import Counter
@@ -277,6 +278,7 @@ class AuditorAgent:
             for score_v, count in counts.items():
                 if count >= 4:
                     passed_sanity = False
+                    has_cloned_template_hallucination = True
                     anomalies.append(
                         AuditAnomaly(
                             field="extracted_scores",
@@ -420,7 +422,7 @@ class AuditorAgent:
         # Check if extracted scores are only textual ablations rather than formal benchmark tables
         # (e.g. BiomedParse, where the 14 main benchmarks are only in figures/radar plots and GitHub)
         has_canonical_benchmark_table = False
-        if scalar_scores:
+        if scalar_scores and not has_cloned_template_hallucination:
             for s in scalar_scores:
                 canon = self.alias_resolver.resolve(s.dataset_name)
                 # If it's a known canonical benchmark and comes from a table
@@ -428,7 +430,7 @@ class AuditorAgent:
                     has_canonical_benchmark_table = True
                     break
 
-        if len(scalar_scores) == 0 or (not has_canonical_benchmark_table and extracted.code_repository_url):
+        if len(scalar_scores) == 0 or has_cloned_template_hallucination or (not has_canonical_benchmark_table and extracted.code_repository_url):
             figures_found = False
             if manuscript is not None:
                 for text in manuscript.pages_text.values():
@@ -440,11 +442,11 @@ class AuditorAgent:
                         figures_found = True
                         break
 
-            if len(scalar_scores) == 0 and figures_found:
+            if (len(scalar_scores) == 0 or has_cloned_template_hallucination) and figures_found and not extracted.code_repository_url:
                 data_diagnosis = MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
             elif extracted.code_repository_url:
                 data_diagnosis = MissingDataDiagnosis.CODE_REPO_AVAILABLE
-            elif len(scalar_scores) == 0:
+            elif len(scalar_scores) == 0 or has_cloned_template_hallucination:
                 data_diagnosis = MissingDataDiagnosis.MISSING_TABLE_NO_DATA
 
         # -------------------------------------------------------------
@@ -452,10 +454,10 @@ class AuditorAgent:
         # -------------------------------------------------------------
         if not passed_screening:
             status = AuditStatus.REJECTED
-        elif data_diagnosis == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND:
-            status = AuditStatus.NEEDS_OUTREACH
         elif data_diagnosis == MissingDataDiagnosis.CODE_REPO_AVAILABLE:
             status = AuditStatus.NEEDS_REPO_INSPECTION
+        elif data_diagnosis == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND:
+            status = AuditStatus.NEEDS_OUTREACH
         elif data_diagnosis == MissingDataDiagnosis.MISSING_TABLE_NO_DATA:
             status = AuditStatus.REJECTED
             rejection_reasons.append("Manuscript contains no quantitative evaluation tables or benchmark scores.")
