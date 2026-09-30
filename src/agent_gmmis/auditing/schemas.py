@@ -4,6 +4,8 @@ from enum import Enum
 from typing import Any, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
+from agent_gmmis.extraction.schemas import RawExtractedScore
+
 
 class AuditStatus(str, Enum):
     """Overall certification status issued by the Auditor."""
@@ -71,3 +73,20 @@ class AuditReport(BaseModel):
     data_diagnosis: MissingDataDiagnosis = MissingDataDiagnosis.NONE
     confidence_score: float = Field(1.0, description="Confidence score from 0.0 to 1.0")
     summary: str = ""
+
+
+class RepoInspectionResult(BaseModel):
+    """Result of inspecting an official code repository for quantitative benchmarks."""
+
+    repo_url: str = Field(..., description="Target repository URL (e.g. GitHub URL)")
+    success: bool = Field(False, description="True if quantitative benchmarks were successfully extracted")
+    extracted_scores: List[RawExtractedScore] = Field(
+        default_factory=list,
+        description="List of benchmark scores extracted from repository artifacts",
+    )
+    inspected_files: List[str] = Field(
+        default_factory=list,
+        description="Relative file paths inspected within the repository",
+    )
+    message: str = Field("", description="Status message, summary, or error explanation")
+    cache_path: Optional[str] = Field(None, description="Local filesystem path where repository is cached")

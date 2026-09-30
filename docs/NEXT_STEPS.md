@@ -2,8 +2,8 @@
 
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
-> **Last Updated**: `2026-09-23`  
-> **Status**: Steps 1, 2, 2.5, and **Phase 3.1 (AuditorAgent / 'Il Vigile') Completed & Verified**. Ready for **Phase 3.2 (GitHub Repo Inspector & OutreachAgent)**.
+> **Last Updated**: `2026-09-30`  
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, and **Phase 3.2 Part 1 (`RepoInspector`) Completed & Verified**. Next up: **Phase 3.2 Part 2 (`OutreachAgent`)**.
 
 ---
 
@@ -14,7 +14,7 @@
    * Pydantic v2 schemas: `ModelMetadata`, `DatasetMetadata`, `BenchmarkScore`, `InclusionCriteriaCheck`.
    * SQLite Data Access Layer (`DatabaseManager`) validating all 98 survey models and 58 benchmark datasets in `data/database.sqlite`.
 2. **Step 2: Information Extraction Engine** (`src/agent_gmmis/extraction/`)
-   * Universal `LLMClient` supporting Google AI Studio Free Tier (`gemini-3.5-flash-lite`, 0.00 €), Ollama, and DEIB Mufasa HPC.
+   * Universal `LLMClient` supporting Google AI Studio Free Tier (`gemini-3.5-flash-lite`, 0.00 €), Ollama, and DEIB Mufasa HPC (`Qwen2.5-14B-Instruct-AWQ` via vLLM).
    * `PDFParser` with PyMuPDF: Multi-dimensional page scoring, main-body priority (pages $\le 25$), multi-page table continuation bonus, and evaluation figure recognition.
    * `PaperFetcher`: Local persistent PDF caching in `data/cache_papers/` and automatic arXiv version suffix sanitization.
    * `DatasetAliasResolver`: Reverse-indexing 30+ canonical benchmarks and 120+ synonym variants with word-boundary matching.
@@ -26,7 +26,12 @@
    * **`AuditorAgent` (`auditor.py`)**: Multi-level inspection engine enforcing inclusion screening, architectural parameter bounds (ViT-B/L/H), statistical distribution outlier detection via SQLite historical baselines, and missing data diagnosis.
    * **Dynamic Database Statistics**: Extended `DatabaseManager.get_dataset_statistics()` to dynamically compute historical `min`, `max`, `mean`, and sample count per benchmark.
    * **Ground Truth Discrepancy Auditing**: Intercepts historical survey copy-paste typos (`LHU-Net`).
-   * **23/23 tests passing in <0.35s** with full coverage of all edge cases.
+5. **Phase 3.2 Part 1: GitHub Repository Inspector (`RepoInspector`)** (`src/agent_gmmis/auditing/repo_inspector.py`)
+   * Inspects official code repositories for papers lacking scalar tables (`BiomedParse`).
+   * Multi-format parsing: Markdown tables (long and wide format), structured JSON artifacts, CSV evaluation logs.
+   * Resolves aliases and standardizes scores with `DatasetAliasResolver`.
+   * End-to-end `inspect_and_update` workflow: automatically recovers scores and re-audits paper from `NEEDS_REPO_INSPECTION` to `VERIFIED`.
+   * **39/39 tests passing in <0.45s** with 100% coverage across all modules.
 
 ---
 
@@ -72,17 +77,18 @@ With the Critic (`AuditorAgent`) operational, Step 3 advances to the **Delegatio
 * **Missing Data Diagnosis**:
   * When a paper has 0 scalar scores (e.g. `BiomedParse`, `Merlin`): classify whether data is in visual figures (bar/radar charts) or supplementary appendix sections.
 
-#### 2. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`)
+#### 2. Implement GitHub Repository Inspector (`src/agent_gmmis/auditing/repo_inspector.py`) — **COMPLETED**
+* Ingests public repositories when manuscript tables are missing (`BiomedParse`).
+* Multi-format parser: Markdown tables (long & wide layouts), structured JSON results, CSV evaluation logs.
+* Resolves synonyms to canonical benchmarks via `DatasetAliasResolver`.
+* Seamless `inspect_and_update` integration with `AuditorAgent` recovering scores and re-certifying to `VERIFIED`.
+* Verified with 9 dedicated unit tests (39/39 tests green across suite).
+
+#### 3. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`) — **NEXT ACTION**
 * Direct operationalization of Moglia et al. methodology (*"In cases where the Dice score was only available in graphical form without explicit numerical values, we contacted the corresponding authors"*).
 * Automatically extracts corresponding author name, email, and institution from manuscript header.
 * Drafts a formal, polite academic inquiry email in English requesting numerical values for the specific benchmark figures.
 * Saves email draft for human-in-the-loop review before dispatch.
-
-#### 3. Implement GitHub Repository Inspector (`src/agent_gmmis/auditing/repo_inspector.py`)
-* For papers like `BiomedParse` where benchmark tables do not exist in the manuscript:
-  * Clone or inspect the public GitHub repository URL extracted by `ExtractionAgent`.
-  * Search for benchmark result files (`results.json`, `eval_metrics.csv`, `test_scores.json`).
-  * Extract numerical Dice scores directly from code artifacts.
 
 #### 4. Implement `DatabaseAgent` (Curator Engine) (`src/agent_gmmis/curation/curator.py`)
 * **Entity Resolution & Deduplication**:

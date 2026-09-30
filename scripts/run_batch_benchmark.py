@@ -132,9 +132,12 @@ def main():
         evaluator = ExtractionEvaluator(db_manager=db)
 
         from agent_gmmis.auditing.auditor import AuditorAgent
+        from agent_gmmis.auditing.repo_inspector import RepoInspector
+        from agent_gmmis.auditing.schemas import AuditStatus
         from agent_gmmis.extraction.pdf_parser import PDFParser
 
         auditor = AuditorAgent(db_manager=db)
+        repo_inspector = RepoInspector()
         summary_rows = []
         detailed_reports = []
 
@@ -146,6 +149,17 @@ def main():
                 manuscript = PDFParser.parse(pdf_path)
                 extracted = agent.process_manuscript(manuscript)
                 audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=args.audit_ground_truth)
+
+                # Delegation Layer: GitHub Repository Inspector
+                repo_recovered = False
+                if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION and extracted.code_repository_url:
+                    print(f"   🔍 [Delegation Layer] Triggering RepoInspector for '{model_id}' ({extracted.code_repository_url})...")
+                    extracted, reaudited_report = repo_inspector.inspect_and_update(extracted, auditor=auditor)
+                    if reaudited_report:
+                        audit_report = reaudited_report
+                        repo_recovered = True
+                        print(f"   ✨ RepoInspector recovered scores! New Status: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%)")
+
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 
@@ -155,6 +169,8 @@ def main():
                     if audit_report.status.value == "verified"
                     else ("⚠️ " + audit_report.status.value.upper())
                 )
+                if repo_recovered:
+                    audit_status_badge += " (REPO)"
 
                 summary_rows.append([
                     model_id,

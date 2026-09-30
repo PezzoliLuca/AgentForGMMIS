@@ -385,3 +385,40 @@ Implement the autonomous quality control and verification engine (`AuditorAgent`
     3. *Automatic 400 Context Recovery*: Implemented an automatic retry handler in `LLMClient` that parses `ctx_len` and `input_tokens` directly from the vLLM 400 error payload, immediately re-requesting with `retry_tokens = max(256, ctx_len - input_len - 64)`.
     4. *Robust JSON Truncation Healing*: Added structural closing of unclosed quotes, brackets, and braces to prevent JSON parse crashes on massive long-context outputs.
 * **Status**: All 30 unit tests passing (100% green). All changes pushed to GitHub (`main`) and pulled directly onto the Mufasa cluster node.
+
+---
+
+### 11. Phase 3.2 — Delegation Layer: GitHub Repository Inspector (`RepoInspector`) (2026-09-30)
+
+* **Motivation & Context**:
+  * In scientific literature (e.g. `BiomedParse`), foundation models often present primary comparative results exclusively through visual figures (radar charts, bar plots) or qualitative text, while omitting explicit scalar benchmark tables from the manuscript.
+  * In such cases, `AuditorAgent` ("Il Vigile") correctly diagnoses `MissingDataDiagnosis.CODE_REPO_AVAILABLE` and routes the paper to `AuditStatus.NEEDS_REPO_INSPECTION`.
+  * Phase 3.2 introduces the autonomous **Delegation Layer**, starting with `RepoInspector`, to inspect public repositories, parse artifact files, and recover quantitative benchmark tables directly from code repositories.
+
+* **Architecture & Features Implemented**:
+  1. **Pydantic Contract & Schema (`src/agent_gmmis/auditing/schemas.py`)**:
+     * Defined `RepoInspectionResult` with `repo_url`, `success`, `extracted_scores: List[RawExtractedScore]`, `inspected_files: List[str]`, `message`, and `cache_path`.
+  2. **URL Parsing & Shallow Cloning Strategy (`src/agent_gmmis/auditing/repo_inspector.py`)**:
+     * Implemented `RepoInspector.parse_github_url` supporting standard GitHub URLs, `.git` suffixes, subpaths (`/tree/main/...`), and SSH URLs.
+     * Integrated zero-cost local repository caching in `data/cache_repos/{owner}_{repo}`.
+     * Uses shallow cloning (`git clone --depth 1`) with execution timeouts to minimize bandwidth and storage while supporting complete offline testing on local folders.
+  3. **Multi-Format Benchmark Parsing Engine**:
+     * **Markdown Table Parsing**: Extracts benchmarks from `README.md` and documentation files. Supports both **Long Format** (rows = datasets/organs, column = Dice/DSC) and **Wide Format** (rows = datasets, columns = model names, matching proposed model or "ours").
+     * **JSON Artifact Parsing**: Ingests flat dictionaries (`{"BTCV": 0.885}`), nested structures (`{"BiomedParse": {"BTCV": 0.885}}`), and list-of-records benchmark logs (`[{"dataset": "BTCV", "dice": 0.885}]`).
+     * **CSV/TSV Ingestion**: Automatically sniffs delimiters and maps dataset, organ, and metric fields.
+  4. **Canonical Benchmark Resolution**:
+     * Connects directly to `DatasetAliasResolver` to normalize raw names (e.g., "Synapse" -> "BTCV", "BraTS21" -> "BraTS") and normalize percentages to $[0.0, 1.0]$.
+  5. **Auditor Re-audit Integration (`inspect_and_update`)**:
+     * Given an `ExtractedPaperData` with missing tables, inspects the repository, merges recovered scores, and invokes `AuditorAgent.audit()`.
+     * Demonstrates an autonomous recovery workflow where papers transition from `NEEDS_REPO_INSPECTION` directly to `VERIFIED` certification.
+
+* **Test Suite Expansion & Verification (`tests/test_repo_inspector.py`)**:
+  * Implemented 9 dedicated unit tests covering:
+    - URL parsing across 9 valid/invalid variants.
+    - Markdown table extraction (long & wide layouts).
+    - JSON metrics parsing (flat, nested, and list formats).
+    - CSV/TSV evaluation metrics extraction.
+    - Full directory inspection and file deduplication.
+    - Empty repository and error handling.
+    - End-to-end `inspect_and_update` recovery with `AuditorAgent`.
+  * **Test Results**: **39/39 tests passing across entire repository in 0.43s** (0 regressions).

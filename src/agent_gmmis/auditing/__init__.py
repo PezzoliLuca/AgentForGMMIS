@@ -1,6 +1,7 @@
 """Auditing and curation module ('Il Vigile') for AgentForGMMIS."""
 
 from agent_gmmis.auditing.auditor import AuditorAgent
+from agent_gmmis.auditing.repo_inspector import RepoInspector
 from agent_gmmis.auditing.schemas import (
     AuditAnomaly,
     AuditReport,
@@ -8,6 +9,7 @@ from agent_gmmis.auditing.schemas import (
     DiscrepancyNotice,
     MissingDataDiagnosis,
     OutlierDetectionResult,
+    RepoInspectionResult,
 )
 
 __all__ = [
@@ -18,4 +20,6 @@ __all__ = [
     "OutlierDetectionResult",
     "DiscrepancyNotice",
     "MissingDataDiagnosis",
+    "RepoInspector",
+    "RepoInspectionResult",
 ]

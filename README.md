@@ -133,8 +133,8 @@ AgentForGMMIS/
 ├── src/agent_gmmis/          # Production Python package
 │   ├── data/                 # SQLite DAL & Pydantic models
 │   ├── extraction/           # PDFParser, Extractor, Prompts, Evaluator
-│   ├── auditing/             # AuditorAgent ("Il Vigile")
+│   ├── auditing/             # AuditorAgent ("Il Vigile") & RepoInspector
 │   └── llm/                  # Universal model client (Gemini, Mufasa, Ollama, Mock)
-├── tests/                    # 30 comprehensive unit & domain tests (pytest)
+├── tests/                    # 39 comprehensive unit & domain tests (pytest)
 └── logs/                     # Benchmark execution logs & Markdown reports
 ```

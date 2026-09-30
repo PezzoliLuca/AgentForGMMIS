@@ -192,6 +192,24 @@ def main():
     if audit_report.data_diagnosis.value != "none":
         print(f"\n🩺 Missing Data Diagnosis: {audit_report.data_diagnosis.value}")
 
+    # -------------------------------------------------------------
+    # Step 3.2: Delegation Layer (RepoInspector)
+    # -------------------------------------------------------------
+    from agent_gmmis.auditing.schemas import AuditStatus
+    if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION and extracted_data.code_repository_url:
+        print("\n" + "=" * 70)
+        print("🔍 DELEGATION LAYER — GITHUB REPO INSPECTOR")
+        print("=" * 70)
+        print(f"Inspecting code repository: {extracted_data.code_repository_url}")
+        from agent_gmmis.auditing.repo_inspector import RepoInspector
+        repo_inspector = RepoInspector()
+        extracted_data, reaudited_report = repo_inspector.inspect_and_update(extracted_data, auditor=auditor)
+        if reaudited_report:
+            audit_report = reaudited_report
+            print(f"✨ Successfully recovered scores from code repository!")
+            print(f"Updated Audit Status: {audit_report.status.value.upper()} (Confidence: {audit_report.confidence_score * 100:.1f}%)")
+            print(f"Total Scores Now Available: {len(extracted_data.extracted_scores)}")
+
     # Evaluation against Ground Truth (if requested or available)
     gt_model = db.get_model(extracted_data.proposed_model_id)
 
