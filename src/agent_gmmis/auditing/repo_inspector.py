@@ -55,6 +55,7 @@ class RepoInspector:
         - https://github.com/owner/repo
         - https://github.com/owner/repo.git
         - https://github.com/owner/repo/tree/main/subfolder
+        - https://owner.github.io/repo/
         - git@github.com:owner/repo.git
 
         Returns:
@@ -63,6 +64,12 @@ class RepoInspector:
         if not url:
             return None
         clean_url = url.strip()
+
+        # Support https://owner.github.io/repo
+        io_match = re.search(r"https?://(?P<owner>[\w.-]+)\.github\.io/(?P<repo>[\w.-]+)", clean_url, re.IGNORECASE)
+        if io_match:
+            return io_match.group("owner"), io_match.group("repo").rstrip("/")
+
         match = re.search(r"github\.com[/:](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)", clean_url, re.IGNORECASE)
         if not match:
             return None
@@ -99,8 +106,11 @@ class RepoInspector:
         logger.info(f"Cloning repository shallowly into {target_dir}...")
         try:
             cmd = ["git", "clone", "--depth", "1", clone_url, str(target_dir)]
+            env = os.environ.copy()
+            env["GIT_LFS_SKIP_SMUDGE"] = "1"
             res = subprocess.run(
                 cmd,
+                env=env,
                 capture_output=True,
                 text=True,
                 timeout=self.timeout_seconds,
@@ -135,9 +145,17 @@ class RepoInspector:
                 if p.is_file() and p not in candidates:
                     candidates.append(p)
 
-        # 2. Markdown documentation files
+        # 2. Markdown documentation files & result files
         for root, dirs, files in os.walk(repo_dir):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules" and d != "__pycache__"]
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".")
+                and d != "node_modules"
+                and d != "__pycache__"
+                and d != "assets"
+                and d != "checkpoints"
+                and d != "weights"
+            ]
             for f in files:
                 f_low = f.lower()
                 if f_low in ignored_names:
@@ -440,6 +458,34 @@ class RepoInspector:
                                     organ_or_task=organ,
                                     dice_score=parsed_score,
                                     table_or_section_ref=f"repo:{rel_path}",
+                                    evaluated_model_name=model_name,
+                                )
+                            )
+                elif dice_field and not ds_field:
+                    # Dataset name may reside in the directory structure (e.g. results/amos22/CT/liver_metrics.csv)
+                    path_parts = Path(rel_path).parts
+                    path_ds = None
+                    for part in reversed(path_parts[:-1]):
+                        res = self.alias_resolver.resolve(part)
+                        if res:
+                            path_ds = res
+                            break
+                    if path_ds:
+                        dices = []
+                        for row in reader:
+                            val = self._parse_score_value(row.get(dice_field))
+                            if val is not None:
+                                dices.append(val)
+                        if dices:
+                            mean_dice = round(sum(dices) / len(dices), 4)
+                            organ_raw = csv_path.stem.replace("_metrics", "").replace("+", " ").strip()
+                            organ = organ_raw.title() if organ_raw else "Overall"
+                            scores.append(
+                                RawExtractedScore(
+                                    dataset_name=path_ds,
+                                    organ_or_task=organ,
+                                    dice_score=mean_dice,
+                                    table_or_section_ref=f"repo:{rel_path} (mean of {len(dices)} cases)",
                                     evaluated_model_name=model_name,
                                 )
                             )

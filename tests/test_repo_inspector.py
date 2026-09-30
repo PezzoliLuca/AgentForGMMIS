@@ -34,6 +34,7 @@ class TestRepoInspector:
             ("https://github.com/microsoft/BiomedParse", ("microsoft", "BiomedParse")),
             ("https://github.com/microsoft/BiomedParse.git", ("microsoft", "BiomedParse")),
             ("https://github.com/microsoft/BiomedParse/tree/main/docs", ("microsoft", "BiomedParse")),
+            ("https://microsoft.github.io/BiomedParse/", ("microsoft", "BiomedParse")),
             ("git@github.com:microsoft/BiomedParse.git", ("microsoft", "BiomedParse")),
             ("http://github.com/PezzoliLuca/AgentForGMMIS/", ("PezzoliLuca/AgentForGMMIS".split("/"))),
         ]
