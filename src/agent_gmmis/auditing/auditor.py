@@ -270,26 +270,29 @@ class AuditorAgent:
 
         # 2g. Suspiciously Identical / Cloned Scores (Template Hallucination Check)
         has_cloned_template_hallucination = False
-        proposed_scores = [s.dice_score for s in extracted.extracted_scores if not s.is_baseline_comparison and s.dice_score is not None]
-        if len(proposed_scores) >= 4:
-            from collections import Counter
+        scores_by_val: Dict[float, Set[Tuple[str, str]]] = {}
+        for s in extracted.extracted_scores:
+            if not s.is_baseline_comparison and s.dice_score is not None:
+                val = round(s.dice_score, 4)
+                d_canon = (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name).strip().lower()
+                task = (s.organ_or_task or "").strip().lower()
+                scores_by_val.setdefault(val, set()).add((d_canon, task))
 
-            counts = Counter(proposed_scores)
-            for score_v, count in counts.items():
-                if count >= 4:
-                    passed_sanity = False
-                    has_cloned_template_hallucination = True
-                    anomalies.append(
-                        AuditAnomaly(
-                            field="extracted_scores",
-                            severity="critical",
-                            message=(
-                                f"Suspiciously identical Dice score ({score_v:.4f}) repeated across {count} "
-                                f"different benchmarks/tasks. Strong indicator of LLM template hallucination."
-                            ),
-                            extracted_value=score_v,
-                        )
+        for score_v, tasks_set in scores_by_val.items():
+            if len(tasks_set) >= 4:
+                passed_sanity = False
+                has_cloned_template_hallucination = True
+                anomalies.append(
+                    AuditAnomaly(
+                        field="extracted_scores",
+                        severity="critical",
+                        message=(
+                            f"Suspiciously identical Dice score ({score_v:.4f}) repeated across {len(tasks_set)} "
+                            f"different benchmarks/tasks. Strong indicator of LLM template hallucination."
+                        ),
+                        extracted_value=score_v,
                     )
+                )
 
         # 2h. Hardware vs VRAM Consistency Check
         if extracted.resources and extracted.resources_total_vram_gb is not None:
@@ -425,8 +428,8 @@ class AuditorAgent:
         if scalar_scores and not has_cloned_template_hallucination:
             for s in scalar_scores:
                 canon = self.alias_resolver.resolve(s.dataset_name)
-                # If it's a known canonical benchmark and comes from a table
-                if canon and s.table_or_section_ref and "table" in s.table_or_section_ref.lower():
+                # If it's a known canonical benchmark and comes from a table or repository artifact
+                if canon and s.table_or_section_ref and any(t in s.table_or_section_ref.lower() for t in ("table", "readme", ".csv", ".json", "repo")):
                     has_canonical_benchmark_table = True
                     break
 
