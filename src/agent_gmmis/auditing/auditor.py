@@ -269,14 +269,21 @@ class AuditorAgent:
                 )
 
         # 2g. Suspiciously Identical / Cloned Scores (Template Hallucination Check)
+        # Template hallucinations only apply to scores extracted directly from manuscript text/tables,
+        # not to authentic empirical evaluation artifacts recovered from code repositories.
         has_cloned_template_hallucination = False
+        manuscript_scores = [
+            s for s in extracted.extracted_scores
+            if not s.is_baseline_comparison
+            and s.dice_score is not None
+            and not (s.table_or_section_ref and s.table_or_section_ref.startswith("repo:"))
+        ]
         scores_by_val: Dict[float, Set[Tuple[str, str]]] = {}
-        for s in extracted.extracted_scores:
-            if not s.is_baseline_comparison and s.dice_score is not None:
-                val = round(s.dice_score, 4)
-                d_canon = (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name).strip().lower()
-                task = (s.organ_or_task or "").strip().lower()
-                scores_by_val.setdefault(val, set()).add((d_canon, task))
+        for s in manuscript_scores:
+            val = round(s.dice_score, 4)
+            d_canon = (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name).strip().lower()
+            task = (s.organ_or_task or "").strip().lower()
+            scores_by_val.setdefault(val, set()).add((d_canon, task))
 
         for score_v, tasks_set in scores_by_val.items():
             if len(tasks_set) >= 4:
