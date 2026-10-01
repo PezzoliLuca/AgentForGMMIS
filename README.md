@@ -135,6 +135,6 @@ AgentForGMMIS/
 │   ├── extraction/           # PDFParser, Extractor, Prompts, Evaluator
 │   ├── auditing/             # AuditorAgent ("Il Vigile") & RepoInspector
 │   └── llm/                  # Universal model client (Gemini, Mufasa, Ollama, Mock)
-├── tests/                    # 39 comprehensive unit & domain tests (pytest)
+├── tests/                    # 40 comprehensive unit & domain tests (pytest)
 └── logs/                     # Benchmark execution logs & Markdown reports
 ```
