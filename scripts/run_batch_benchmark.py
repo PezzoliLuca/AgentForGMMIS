@@ -5,6 +5,7 @@ Logs execution and saves comprehensive markdown/table reports to the logs/ direc
 
 import argparse
 from datetime import datetime
+import json
 from pathlib import Path
 import sys
 import time
@@ -189,6 +190,7 @@ def main():
                     "audit_report": audit_report,
                     "elapsed": elapsed,
                     "pdf_name": pdf_path.name,
+                    "repo_recovered": repo_recovered,
                 })
 
                 audit_notes = []
@@ -214,6 +216,12 @@ def main():
                     "N/A",
                     f"{elapsed:.1f}s",
                 ])
+                detailed_reports.append({
+                    "model_id": model_id,
+                    "error": str(e),
+                    "elapsed": elapsed,
+                    "repo_recovered": False,
+                })
 
             # Polite pause between papers to stay well within free tier burst limits
             if idx < len(target_model_ids):
@@ -252,19 +260,61 @@ def main():
             "",
         ]
 
+        # Machine-readable JSON output data structure
+        json_results = {
+            "metadata": {
+                "timestamp": start_time_iso,
+                "provider": args.provider or "gemini",
+                "model": args.model or "gemini-3.5-flash-lite",
+                "auditor_mode": auditor_mode_desc,
+                "compare_source": args.compare_source,
+                "total_papers": len(target_model_ids),
+            },
+            "summary": [
+                {
+                    "model_id": row[0],
+                    "audit_status": row[1],
+                    "confidence": row[2],
+                    "matched_datasets": row[3],
+                    "recall": row[4],
+                    "dice_mae": row[5],
+                    "elapsed_time": row[6],
+                }
+                for row in summary_rows
+            ],
+            "papers": [],
+        }
+
         for item in detailed_reports:
             mid = item["model_id"]
+            if "error" in item:
+                md_lines.append(f"### Model: {mid}")
+                md_lines.append(f"- **Status**: ❌ ERROR")
+                md_lines.append(f"- **Error Details**: `{item['error']}`")
+                md_lines.append(f"- **Execution Time**: {item['elapsed']:.1f}s\n")
+                json_results["papers"].append({
+                    "model_id": mid,
+                    "error": item["error"],
+                    "elapsed_seconds": item["elapsed"],
+                    "audit_status": "error",
+                    "confidence_score": 0.0,
+                    "repo_recovered": False,
+                    "dataset_recall": 0.0,
+                    "dice_mae": None,
+                })
+                continue
+
             rep = item["report"]
             ext = item["extracted"]
             elap = item["elapsed"]
+            ar = item.get("audit_report")
             md_lines.append(f"### Model: {mid}")
             md_lines.append(f"- **Paper Title**: {ext.paper_title}")
             md_lines.append(f"- **PDF File**: `{item['pdf_name']}` (cached)")
             md_lines.append(f"- **Visual Backbone**: {ext.visual_backbone or 'N/A'}")
             md_lines.append(f"- **Repository URL**: {ext.code_repository_url or 'N/A'}")
             md_lines.append(f"- **Execution Time**: {elap:.1f}s")
-            if "audit_report" in item:
-                ar = item["audit_report"]
+            if ar:
                 md_lines.append(f"- **Audit Status**: `{ar.status.value.upper()}` (Confidence: {ar.confidence_score*100:.1f}%)")
                 if ar.anomalies:
                     md_lines.append(f"- **Anomalies**: {'; '.join(a.message for a in ar.anomalies)}")
@@ -275,6 +325,7 @@ def main():
                 if ar.data_diagnosis.value != "none":
                     md_lines.append(f"- **Missing Data Diagnosis**: `{ar.data_diagnosis.value}`")
             md_lines.append("")
+
             if rep.score_comparisons:
                 md_lines.append("#### Benchmark Table Matches vs. Ground Truth:")
                 comp_rows = [
@@ -289,15 +340,45 @@ def main():
                     md_lines.append(f"*(Extracted scores from: {datasets_seen})*")
             md_lines.append("")
 
+            json_results["papers"].append({
+                "model_id": mid,
+                "paper_title": ext.paper_title,
+                "pdf_name": item["pdf_name"],
+                "visual_backbone": ext.visual_backbone,
+                "code_repository_url": ext.code_repository_url,
+                "elapsed_seconds": elap,
+                "audit_status": ar.status.value if ar else None,
+                "confidence_score": ar.confidence_score if ar else None,
+                "repo_recovered": item.get("repo_recovered", False),
+                "anomalies": [a.message for a in ar.anomalies] if ar else [],
+                "outliers": [o.reason for o in ar.outliers] if ar else [],
+                "discrepancies": [d.message for d in ar.discrepancies] if ar else [],
+                "data_diagnosis": ar.data_diagnosis.value if ar else "none",
+                "extracted_scores_count": len(ext.extracted_scores),
+                "matched_datasets_count": rep.matched_datasets_count,
+                "ground_truth_datasets_count": rep.ground_truth_datasets_count,
+                "dataset_recall": rep.dataset_recall,
+                "dice_mae": rep.dice_mae,
+                "score_comparisons": rep.score_comparisons,
+            })
+
         report_content = "\n".join(md_lines)
         with open(report_path, "w", encoding="utf-8") as f:
             f.write(report_content)
         with open(latest_report_path, "w", encoding="utf-8") as f:
             f.write(report_content)
 
+        json_path = out_dir / f"batch_benchmark_results_{timestamp}.json"
+        latest_json_path = out_dir / "latest_batch_benchmark.json"
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(json_results, f, indent=2)
+        with open(latest_json_path, "w", encoding="utf-8") as f:
+            json.dump(json_results, f, indent=2)
+
         print("\n" + "=" * 80)
         print(f"📄 Detailed Markdown report saved to: {report_path}")
         print(f"📄 Latest report available at:        {latest_report_path}")
+        print(f"📊 Structured JSON results saved to:  {json_path}")
         print(f"📝 Full execution log saved to:       {log_path}")
         print("=" * 80 + "\n")
 
