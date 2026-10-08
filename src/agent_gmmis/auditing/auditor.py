@@ -47,6 +47,80 @@ class AuditorAgent:
         self.db = db_manager or DatabaseManager()
         self.alias_resolver = DatasetAliasResolver(db_manager=self.db)
 
+    STOPWORDS = {"and", "for", "with", "of", "in", "the", "a", "an", "on", "to", "from", "by", "as"}
+
+    @classmethod
+    def _is_model_name_compatible_with_paper(
+        cls,
+        model_id: str,
+        paper_title: str,
+        manuscript: Optional[ParsedManuscript] = None,
+    ) -> bool:
+        """Determines if a model name is genuinely the paper's proposed architecture rather than a baseline competitor.
+
+        Evaluates multi-level semantic compatibility:
+        1. Exact or punctuation-insensitive substring match in title.
+        2. Acronym / abbreviation / prefix alignment with title words (excluding common stopwords).
+        3. Explicit self-nomination in manuscript abstract/introduction ("we propose/introduce X", "our model, X").
+        """
+        if not model_id or not paper_title:
+            return True
+
+        m_clean = model_id.lower().strip()
+        t_clean = paper_title.lower().strip()
+
+        # 1. Direct or normalized substring match in title
+        if m_clean in t_clean:
+            return True
+        m_alphanumeric = re.sub(r"[^a-z0-9]", "", m_clean)
+        t_alphanumeric = re.sub(r"[^a-z0-9]", "", t_clean)
+        if m_alphanumeric and m_alphanumeric in t_alphanumeric:
+            return True
+
+        # 2. Acronym / Abbreviation alignment with title words
+        title_tokens = [w for w in re.findall(r"[a-z0-9]+", t_clean) if len(w) > 1 and w not in cls.STOPWORDS]
+        model_tokens = [w for w in re.findall(r"[a-z0-9]+", m_clean) if w]
+
+        if model_tokens and title_tokens:
+            tokens_matched = 0
+            for mt in model_tokens:
+                # Check if mt is prefix of any title word (e.g. 'med' of 'medical')
+                if any(tt.startswith(mt) for tt in title_tokens):
+                    tokens_matched += 1
+                # Check if mt matches initials of consecutive title words (e.g. 'sa' for 'sam adapter')
+                elif any(
+                    "".join(title_tokens[i : i + len(mt)]).startswith(mt)
+                    or "".join(w[0] for w in title_tokens[i : i + len(mt)]) == mt
+                    for i in range(len(title_tokens) - len(mt) + 1)
+                ):
+                    tokens_matched += 1
+
+            if tokens_matched == len(model_tokens):
+                return True
+
+            # Check title word initials (e.g. "Medical SAM Adapter" initials: "msa", "STU-Net" in "stun")
+            title_initials = "".join(w[0] for w in title_tokens)
+            if m_alphanumeric in title_initials or (len(m_alphanumeric) >= 3 and title_initials.startswith(m_alphanumeric)):
+                return True
+
+        # 3. Contextual Self-Nomination in Manuscript (Abstract & First 3 Pages)
+        if manuscript is not None and getattr(manuscript, "pages_text", None):
+            first_text = " ".join(
+                str(manuscript.pages_text.get(p, ""))
+                for p in range(1, min(4, getattr(manuscript, "total_pages", 1) + 1))
+            ).lower()
+
+            # Pattern A: Title followed by acronym in parentheses, e.g. "Medical SAM Adapter (Med-SA)"
+            if re.search(rf"\(\s*{re.escape(m_clean)}\s*\)", first_text):
+                return True
+
+            # Pattern B: Authors explicitly state "we propose/introduce/present/develop X" or "our model/framework/method X"
+            self_nomination_pattern = rf"(?:we\s+(?:propose|introduce|present|develop)|our\s+(?:model|method|framework|approach|architecture))\s+(?:named|called\s+)?[\w\s-]{{0,30}}\b{re.escape(m_clean)}\b"
+            if re.search(self_nomination_pattern, first_text):
+                return True
+
+        return False
+
     def audit(
         self,
         extracted: ExtractedPaperData,
@@ -200,8 +274,9 @@ class AuditorAgent:
 
         # 2d. Baseline Competitor vs Proposed Model Confusion Check
         model_id_clean = extracted.proposed_model_id.lower().strip()
-        title_clean = extracted.paper_title.lower().strip()
-        if model_id_clean in KNOWN_BASELINE_MODELS and model_id_clean not in title_clean:
+        if model_id_clean in KNOWN_BASELINE_MODELS and not self._is_model_name_compatible_with_paper(
+            extracted.proposed_model_id, extracted.paper_title, manuscript
+        ):
             passed_sanity = False
             anomalies.append(
                 AuditAnomaly(

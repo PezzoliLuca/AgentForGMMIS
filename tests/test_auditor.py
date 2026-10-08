@@ -254,6 +254,21 @@ class TestAuditorAgent:
         assert report.status == AuditStatus.REJECTED
         assert any("standard baseline 'nnU-Net'" in a.message for a in report.anomalies)
 
+    def test_audit_baseline_model_acronym_not_confused(self, auditor):
+        """Intelligently distinguish between true baseline confusion and legitimate acronym/abbreviation (e.g. Med-SA)."""
+        data = ExtractedPaperData(
+            paper_title="Medical SAM Adapter: Adapting Segment Anything Model for Medical Image Segmentation",
+            proposed_model_id="Med-SA",
+            screening=InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True),
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8830)
+            ],
+        )
+        report = auditor.audit(data)
+        # Must NOT be falsely rejected as a baseline confusion
+        assert report.status != AuditStatus.REJECTED
+        assert not any("standard baseline 'Med-SA'" in a.message for a in report.anomalies)
+
     def test_audit_conflicting_duplicate_scores(self, auditor):
         """Flag when model produces two contradictory scores on the same dataset/task/prompt."""
         data = ExtractedPaperData(
