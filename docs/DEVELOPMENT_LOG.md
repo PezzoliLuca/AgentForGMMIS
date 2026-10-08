@@ -478,3 +478,33 @@ Implement the autonomous quality control and verification engine (`AuditorAgent`
      * `AuditorAgent` diagnosed missing scalar data, triggered `RepoInspector` on `StanfordMIMI/Merlin`, and cleanly determined that no pre-computed evaluation CSV/JSON files existed in the repo.
      * `Merlin` thus remains in `NEEDS_REPO_INSPECTION`, perfectly setting up Phase 3.2 Part 2: automated author outreach (`OutreachAgent`) to request raw evaluation data for graphical-only publications.
 
+---
+
+### 13. Phase 3.2 Milestone: 30-Paper Cross-Architecture Empirical Benchmark — Frontier Cloud API vs. Sovereign HPC (2026-10-08)
+
+* **Objective & Methodology**:
+  * Scaled empirical evaluation from 15 to **30 scientific publications** covering the foundational 3D medical foundation models.
+  * Executed a parallel double-run comparing:
+    1. **Commercial Cloud Frontier API**: `gemini-3.5-flash-lite` via Google AI Studio (0.00 € Free Tier).
+    2. **Sovereign On-Premise HPC**: `Qwen2.5-14B-Instruct-AWQ` on DEIB Mufasa cluster (SLURM Job 4913, NVIDIA A100-PCIE-40GB MIG slice, vLLM v0.30.0).
+  * Automated machine-readable JSON logging (`latest_batch_benchmark.json`) and cross-architecture comparison tool ([`scripts/compare_benchmarks.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/compare_benchmarks.py)).
+  * Full paper pre-caching (325 MB) across all 30 arXiv manuscripts in [`data/cache_papers/`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/cache_papers/).
+
+* **Comparative Metrics Summary**:
+
+| Metric | Gemini 3.5 Flash | Qwen2.5-14B (Mufasa) | Comparison / Scientific Takeaway |
+| :--- | :---: | :---: | :--- |
+| **Dataset Recall (Avg)** | **66.6%** | **73.6%** | Mufasa achieves +7.0% higher recall (recovering tables on Merlin, SFR SAM, HERMES). |
+| **Macro Dice MAE** | **0.0088** | **0.0218** | Both architectures achieve sub-0.025 MAE (<2.5% deviation from verified ground truth). |
+| **Zero-Diff Matches (0.0000 MAE)** | **18 / 30 models** | **14 / 30 models** | 14 models yielded exact 0.0000 Dice agreement across BOTH models. |
+| **Avg Processing Time** | **9.3s** / paper | **94.2s** / paper | Gemini is 10.1x faster (4.7 min total vs 47.1 min on HPC). |
+| **Auditor Consensus Rate** | **56.7%** (17/30) | **56.7%** (17/30) | Strong consensus on sanity checks, inclusion criteria, and parameter boundaries. |
+| **Typo Discovery Consensus** | **Confirmed (0.0293)** | **Confirmed (0.0293)** | Both independently caught human survey transcription typo in `LHU-Net` (Table 2). |
+| **Rejection Consensus** | **REJECTED (40%)** | **REJECTED (30%)** | Both models rejected `Med-SA` due to non-standard or incompatible reporting criteria. |
+| **RepoInspector Activations** | Diagnosed missing tables | Recovered from GitHub | Mufasa recovered 194 scores on `BiomedParse` (85.7% Recall, 0.0199 MAE). |
+
+* **Publication Artifacts**:
+  * Comparative Markdown Report: [`logs/comparison_gemini_vs_mufasa_30.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/comparison_gemini_vs_mufasa_30.md)
+  * Publication-ready LaTeX Table: [`logs/comparison_gemini_vs_mufasa_30.tex`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/comparison_gemini_vs_mufasa_30.tex)
+
+
