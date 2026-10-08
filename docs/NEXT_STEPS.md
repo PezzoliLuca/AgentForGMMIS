@@ -2,8 +2,8 @@
 
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
-> **Last Updated**: `2026-09-30`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, and **Phase 3.2 Part 1 (`RepoInspector`) Completed & Empirically Validated on Mufasa (BiomedParse 85.7% Recall, 0.0199 MAE)**. Next up: **15-Paper Regression Suite & Phase 3.2 Part 2 (`OutreachAgent`)**.
+> **Last Updated**: `2026-10-08`  
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.2 Part 1 (`RepoInspector`)**, and **30-Paper Cross-Architecture Empirical Benchmark (Gemini 3.5 Flash vs Qwen2.5-14B on Mufasa)** Completed & Validated. `Med-SA` acronym false rejection resolved, prompt rules standardized. Next up: **Phase 3.2 Part 2 (`OutreachAgent`)** and **Phase 3.3 (`DatabaseAgent` / Curator)**.
 
 ---
 
@@ -18,25 +18,28 @@
    * `PDFParser` with PyMuPDF: Multi-dimensional page scoring, main-body priority (pages $\le 25$), multi-page table continuation bonus, and evaluation figure recognition.
    * `PaperFetcher`: Local persistent PDF caching in `data/cache_papers/` and automatic arXiv version suffix sanitization.
    * `DatasetAliasResolver`: Reverse-indexing 30+ canonical benchmarks and 120+ synonym variants with word-boundary matching.
-3. **Step 2.5: 15-Paper Batch Benchmark & Empirical Validation**
-   * Benchmarked across 15 real generalist medical segmentation papers.
-   * **100% Recall & 0.0000 Dice MAE** achieved across 8 target models (`MEA M-SAM`, `SFR SAM`, `MedSAM-2`, `BioSAM-2`, `FLAP-SAM`, `BrainSegFounder`, `TP-Mamba`, `TotalSegmentator MRI`).
-   * **Empirically detected human survey transcription typo** in `LHU-Net` (Table 2 baseline copy-paste error), proving agentic extraction surpasses human precision.
-4. **Step 3.1: Auditor & Quality Assurance Critic ("Il Vigile")** (`src/agent_gmmis/auditing/`)
+   * `prompts.py`: Standardized prompt rules prioritizing 1-point prompt interactive settings, SOTA comparative tables over internal ablations, and macro-average multi-organ rows.
+3. **Step 2.5 & Step 3.2: 30-Paper Cross-Architecture Benchmark & Empirical Validation**
+   * Parallel double-run across 30 foundational 3D medical foundation models comparing Google Gemini 3.5 Flash Lite vs Qwen2.5-14B-Instruct-AWQ on DEIB Mufasa HPC (SLURM Job 4913).
+   * **14 models achieved identical 0.0000 Dice MAE** across both platforms.
+   * **Empirically replicated human survey copy-paste error** in `LHU-Net` across both independent LLM engines (MAE 0.0293).
+   * Analyzed Speed vs. Recall tradeoffs: Gemini is 10.1x faster (9.3s vs 94.2s), while Mufasa achieves +7.0% higher recall (73.6% vs 66.6%).
+4. **Step 3.1 & Hardening: Auditor & Quality Assurance Critic ("Il Vigile")** (`src/agent_gmmis/auditing/`)
    * **`AuditorAgent` (`auditor.py`)**: Multi-level inspection engine enforcing inclusion screening, architectural parameter bounds (ViT-B/L/H), statistical distribution outlier detection via SQLite historical baselines, and missing data diagnosis.
+   * **Epistemological Autonomy**: Completely decoupled deploy mode (`benchmark_mode=False`) from ground truth knowledge; auditing is driven entirely by mathematical bounds, architectural physics, table self-consistency, and Bayesian empirical priors.
+   * **Multi-Tier Acronym Compatibility**: Resolved `Med-SA` false rejection via generalized punctuation normalization, stopword-filtered acronym synthesis, and manuscript self-nomination checks (`_is_model_name_compatible_with_paper`).
    * **Dynamic Database Statistics**: Extended `DatabaseManager.get_dataset_statistics()` to dynamically compute historical `min`, `max`, `mean`, and sample count per benchmark.
-   * **Ground Truth Discrepancy Auditing**: Intercepts historical survey copy-paste typos (`LHU-Net`).
 5. **Phase 3.2 Part 1: GitHub Repository Inspector (`RepoInspector`)** (`src/agent_gmmis/auditing/repo_inspector.py`)
    * Inspects official code repositories for papers lacking scalar tables (`BiomedParse`).
    * Multi-format parsing: Markdown tables (long and wide format), structured JSON artifacts, CSV evaluation logs.
    * Resolves aliases and standardizes scores with `DatasetAliasResolver`.
    * End-to-end `inspect_and_update` workflow: automatically recovers scores and re-audits paper from `NEEDS_REPO_INSPECTION` to `VERIFIED` / `FLAGGED_WARNING`.
    * **Empirically Validated on DEIB Mufasa Cluster (Job 4501)**: `BiomedParse` benchmarked with `Qwen2.5-14B-Instruct-AWQ` recovered from **0/14 (0.0% Recall)** to **12/14 (85.7% Recall)** with a **0.0199 Dice MAE** and 4 exact dataset matches.
-   * **40/40 tests passing in <0.50s** with 100% coverage across all modules.
+   * **41/41 tests passing in <0.70s** with 100% test coverage across all modules.
 
 ---
 
-## 2. Immediate Objective: Phase 3.2 — Delegation Layer (Repo Inspector & OutreachAgent)
+## 2. Immediate Objective: Phase 3.2 Part 2 (`OutreachAgent`) & Phase 3.3 (`DatabaseAgent`)
 
 With the Critic (`AuditorAgent`) operational, Step 3 advances to the **Delegation & Resolution Layer** for papers with missing or graphical benchmark tables:
 

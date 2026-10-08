@@ -507,4 +507,45 @@ Implement the autonomous quality control and verification engine (`AuditorAgent`
   * Comparative Markdown Report: [`logs/comparison_gemini_vs_mufasa_30.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/comparison_gemini_vs_mufasa_30.md)
   * Publication-ready LaTeX Table: [`logs/comparison_gemini_vs_mufasa_30.tex`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/comparison_gemini_vs_mufasa_30.tex)
 
+---
+
+### 14. Step 3.2 Hardening: Epistemological Auditor Grounding, Acronym Disambiguation & Prompt Standardization (2026-10-08)
+
+#### 1. Objective
+Following the completion of the 30-paper double benchmark (Gemini 3.5 Flash vs. Qwen2.5-14B on Mufasa), investigate why `Med-SA` was falsely rejected by `AuditorAgent`, verify that the Auditor does not leak or rely on ground truth during deploy mode, and harden prompt extraction instructions to eliminate avoidable MAE caused by interactive prompt regimes and ablation tables.
+
+#### 2. Root Cause Analysis: The False Rejection of `Med-SA`
+* **Phenomenon**: In the 30-paper benchmark, both Gemini and Mufasa rejected `Med-SA` with `AuditStatus.REJECTED` and 0% confidence, despite extracting 100% exact numerical Dice scores on BTCV (0.8830) and BraTS (0.8910).
+* **Investigation**:
+  * `KNOWN_BASELINE_MODELS` in `src/agent_gmmis/auditing/auditor.py` includes `"med-sa"` as a recognized published baseline.
+  * The manuscript title was *"Medical SAM Adapter: Adapting Segment Anything Model for Medical Image Segmentation"*.
+  * The proposed model name reported by the authors was `"Med-SA"`.
+  * The baseline confusion heuristic previously checked whether `"med-sa"` appeared as a literal substring in the paper title or extracted proposed model name. Because the paper title used the expanded phrase (*"Medical SAM Adapter"*) rather than the acronym (*"Med-SA"*), the heuristic flagged `"Med-SA"` as an alien competitor baseline mistakenly extracted in place of the true model, raising a critical `baseline_confusion` anomaly.
+* **Resolution (`src/agent_gmmis/auditing/auditor.py`)**:
+  * Implemented `_is_model_name_compatible_with_paper()`: a generalized, multi-tier semantic compatibility check that handles acronyms and abbreviations without hardcoding paper-specific exceptions:
+    1. **Punctuation & Delimiter Normalization**: Compares normalized alphanumeric tokens between title, proposed name, and baseline candidates.
+    2. **Initials / Acronym Extraction**: Generates uppercase acronym candidates from multi-word titles (filtering common English stopwords like *"for"*, *"in"*, *"and"*, *"with"*) to confirm whether the model name is an abbreviation of the title (e.g. *Medical SAM Adapter* $\rightarrow$ `MSA` / `MED-SA`).
+    3. **Manuscript Self-Nomination Grounding**: Inspects the manuscript full text for self-nomination phrasing (e.g., *"we propose Med-SA"*, *"our Med-SA"*, *"called Med-SA"*, *"our method Med-SA"*).
+  * Validated with unit test `test_audit_baseline_model_acronym_not_confused` in `tests/test_auditor.py`. All 41/41 unit tests pass.
+
+#### 3. Epistemological Clarification: Auditor Autonomy & Ground Truth Separation
+* **Question**: Does `AuditorAgent` rely on ground truth from `database.sqlite` to compute warnings and audit status?
+* **Verification**:
+  * In `run_batch_benchmark.py`, `--audit-ground-truth` defaults to `False` (`benchmark_mode=False`).
+  * Section 4 of `AuditorAgent.audit()` (`gt_scores = db.get_scores_for_model(model_id)`) is completely bypassed.
+  * Audit warnings, penalties, and status classifications derive strictly from **intrinsic epistemological priors**:
+    - Mathematical interval bounds: $\text{DSC} \in [0.0, 1.0]$.
+    - Architectural scale: parameter count vs. backbone family expectations (e.g., ViT-Base 85M–150M).
+    - Physical hardware limits: single-GPU VRAM boundaries.
+    - Bayesian empirical distributions: checking whether claims exceed historical literature world bounds (e.g., Pancreas tumor DSC > 0.92) via `db.get_dataset_statistics()`.
+    - Intra-table self-consistency: detecting template cloning (scores repeated $\ge 4$ times) and internal contradictions (> 0.03 DSC).
+  * This guarantees that in autonomous production deployment on novel unindexed preprints, the Auditor operates with complete scientific autonomy.
+
+#### 4. Extraction Prompt Disambiguation & Standardization (`src/agent_gmmis/extraction/prompts.py`)
+To prevent non-hallucinatory discrepancies where LLMs extract valid numbers from non-standard experimental settings:
+1. **Interactive Prompt Standardization**: Foundation models (e.g. SAM variants) report 1-point, 3-point, 5-point, and bounding-box columns. Standardized literature surveys (Moglia et al.) explicitly standardize on 1-point interaction (`"1 point"` / `"1 pt"`) for fair comparison against automated baselines. Prompt updated with explicit mandate to prioritize the 1-point regime.
+2. **Table Prioritization (SOTA over Ablations)**: Mandatory instruction to prioritize primary comparative benchmark tables (*"Comparison with State-of-the-Art"*, *"Main Results"*, *"Test Set Evaluation"*) over internal ablation study tables (hyperparameter sweeps or validation sweeps).
+3. **Macro-Average Extraction**: Mandated extraction of `"Average"` / `"Mean"` rows on multi-organ or multi-class tables with `organ_or_task='Overall'` or `'Mean'`, aligning with literature survey indexing protocols.
+
+
 

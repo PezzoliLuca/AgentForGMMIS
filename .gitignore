@@ -53,6 +53,7 @@ logs/
 
 # Paper Caches & Downloaded PDFs
 data/cache_papers/
+data/cache_repos/
 data/sample_papers/
 *.pdf
 
