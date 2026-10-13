@@ -426,4 +426,23 @@ Keep these points in mind when drafting chapters of the final dissertation:
   Fully automated outbound emailing without human oversight risks spamming researchers or sending misdirected inquiries. Therefore, `OutreachAgent` generates and persists both machine-readable JSON (`OutreachDraft`) and formatted Markdown drafts (`.md`), tracking status (`DRAFT_PENDING_REVIEW` $\rightarrow$ `APPROVED` $\rightarrow$ `DISPATCHED` $\rightarrow$ `REPLIED`). The system empowers human researchers to review, edit, and dispatch inquiries with one click.
 * **Defense Impact**: Demonstrates that the autonomous system respects real-world scientific boundaries, mirrors established human methodological practices, and enforces responsible AI governance.
 
+---
+
+### 27. Empirical Validation of the Delegation Loop: Real-World Outreach Case Study (`Merlin`, Stanford MIMI)
+* **The Empirical Case**: During the 20-paper benchmark execution, *Merlin: A Computed Tomography Vision-Language Foundation Model and Dataset* (Blankemeier et al., Stanford MIMI / UW-Madison, arXiv: `2406.06512.pdf`) was subjected to autonomous extraction.
+* **Autonomous Decision Trajectory**:
+  1. *Extraction Attempt*: The `ExtractionAgent` parsed the manuscript text, discovering that all primary segmentation comparisons (Internal Clinical Dataset, External Clinical Dataset, VerSe) were presented as graphical radar/bar plots without numeric evaluation tables.
+  2. *First Delegation (Code Inspection)*: The `AuditorAgent` diagnosed missing tables and triggered `RepoInspector` on the official code repository (`https://github.com/StanfordMIMI/Merlin`).
+  3. *Zero-Data Confirmation*: `RepoInspector` cloned and analyzed the repository tree, establishing that no evaluation CSVs, JSON logs, or Markdown tables were present.
+  4. *Second Delegation (Outreach Trigger)*: The Auditor re-audited the paper with `repo_inspected=True`, transitioning the diagnosis to `MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND` and setting status `AuditStatus.NEEDS_OUTREACH`.
+  5. *Autonomous Inquiry Composition*: The `OutreachAgent` processed the front matter:
+     - Extracted Corresponding Author: **Louis Blankemeier** (`akshaysc@stanford.edu`).
+     - Affiliation: Stanford University, University of Wisconsin-Madison, et al.
+     - Extracted Missing Visual Targets: `Figure 1, Figure 10, Figure 3, Figure 9, Figure 8b, Figure 12, Figure 15`.
+     - Targeted Benchmarks: `Internal Clinical Dataset, External Clinical Dataset, VerSe`.
+     - Draft Generation: Produced a polite, professionally formatted academic email on behalf of Politecnico di Milano DEIB and the GMMIS benchmark initiative.
+     - Persisted artifacts to [`data/outreach_drafts/merlin_outreach.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.md) and [`data/outreach_drafts/merlin_outreach.json`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.json) with status `DRAFT_PENDING_REVIEW`.
+* **Scientific Rigor for Thesis Defense**: This end-to-end trace provides empirical evidence that the system never invents fake metrics when papers omit tables, seamlessly attempts code repository recovery, and gracefully initiates Human-in-the-Loop academic correspondence to obtain ground truth, reproducing the exact investigative protocol of systematic review authors.
+
+
 

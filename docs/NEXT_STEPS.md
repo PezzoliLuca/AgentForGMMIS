@@ -3,7 +3,7 @@
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
 > **Last Updated**: `2026-10-13`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine)**, **Phase 3.2 Parts 1 & 2 (`RepoInspector` & `OutreachAgent`)**, and **30-Paper Cross-Architecture Empirical Benchmark** Completed & Validated. Current Priority: **Phase 3.3 (`DatabaseAgent` / Curator)**.
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine)**, **Phase 3.2 Parts 1 & 2 (`RepoInspector` & `OutreachAgent`)**, and **20-Paper Local Benchmark (Gemini 3.1 Flash Lite) with Real-World Outreach Validation (`Merlin`)** Completed & Validated. Current Priority: **Phase 3.3 (`DatabaseAgent` / Curator)**.
 
 ---
 
@@ -189,7 +189,7 @@ To resume work in the next session, run:
 # 1. Activate Virtual Environment
 source .venv/bin/activate
 
-# 2. Run Test Suite (verify baseline 16/16 tests pass)
+# 2. Run Test Suite (verify baseline 57/57 tests pass)
 .venv/bin/pytest -v
 
 # 3. Quick 3-Paper Extraction Smoke Test
