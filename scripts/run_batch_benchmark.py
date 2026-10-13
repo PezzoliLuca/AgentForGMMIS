@@ -58,9 +58,9 @@ def main():
         help="Number of available arXiv models to test automatically if --models is not specified (default: 10)",
     )
     parser.add_argument("--provider", type=str, default=None, help="LLM provider: gemini, ollama, mufasa, or mock")
-    parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.5-flash-lite)")
+    parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.1-flash-lite)")
     parser.add_argument("--provider-a", type=str, default=None, help="LLM provider for Agent A (default: --provider or gemini)")
-    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.5-flash-lite)")
+    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.1-flash-lite)")
     parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If specified, enables dual-agent parallel consensus mode.")
     parser.add_argument(
@@ -116,7 +116,7 @@ def main():
                             break
 
         provider_a = args.provider_a or args.provider or "gemini"
-        model_a = args.model_a or args.model or "gemini-3.5-flash-lite"
+        model_a = args.model_a or args.model or "gemini-3.1-flash-lite"
         provider_b = args.provider_b or provider_a
         model_b = args.model_b
         is_dual = model_b is not None
@@ -141,6 +141,7 @@ def main():
         evaluator = ExtractionEvaluator(db_manager=db)
 
         from agent_gmmis.auditing.auditor import AuditorAgent
+        from agent_gmmis.auditing.outreach import OutreachAgent
         from agent_gmmis.auditing.repo_inspector import RepoInspector
         from agent_gmmis.auditing.schemas import AuditStatus
         from agent_gmmis.extraction.pdf_parser import PDFParser
@@ -148,6 +149,7 @@ def main():
 
         auditor = AuditorAgent(db_manager=db)
         repo_inspector = RepoInspector()
+        outreach_agent = OutreachAgent()
 
         if is_dual:
             from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
@@ -213,23 +215,35 @@ def main():
                 repo_recovered = False
                 if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION and extracted.code_repository_url:
                     print(f"   🔍 [Delegation Layer] Triggering RepoInspector for '{model_id}' ({extracted.code_repository_url})...")
-                    extracted, reaudited_report = repo_inspector.inspect_and_update(extracted, auditor=auditor)
+                    extracted, reaudited_report = repo_inspector.inspect_and_update(extracted, auditor=auditor, manuscript=manuscript)
                     if reaudited_report:
                         audit_report = reaudited_report
-                        repo_recovered = True
-                        print(f"   ✨ RepoInspector recovered scores! New Status: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%)")
+                        if audit_report.status not in (AuditStatus.NEEDS_OUTREACH, AuditStatus.NEEDS_REPO_INSPECTION):
+                            repo_recovered = True
+                            print(f"   ✨ RepoInspector recovered scores! New Status: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%)")
+                        else:
+                            print(f"   ℹ️ Repo inspected but lacked benchmark tables. Delegating to OutreachAgent...")
+
+                # Delegation Layer: OutreachAgent (Author Email Inquiry)
+                outreach_draft = None
+                if audit_report.status == AuditStatus.NEEDS_OUTREACH:
+                    print(f"   ✉️ [Delegation Layer] Triggering OutreachAgent for '{model_id}'...")
+                    outreach_draft = outreach_agent.handle_audit_report(extracted, manuscript, audit_report, auto_save=True)
+                    if outreach_draft:
+                        print(f"   📝 Generated inquiry draft for {outreach_draft.recipient.name} ({outreach_draft.recipient.email or 'no email'}): {outreach_draft.draft_filepath}")
 
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 
                 dice_mae_str = f"{report.dice_mae:.4f}" if report.dice_mae is not None else "N/A"
-                audit_status_badge = (
-                    "✅ VERIFIED"
-                    if audit_report.status.value == "verified"
-                    else ("⚠️ " + audit_report.status.value.upper())
-                )
-                if repo_recovered:
-                    audit_status_badge += " (REPO)"
+                if outreach_draft:
+                    audit_status_badge = "✉️ OUTREACH DRAFTED"
+                elif repo_recovered:
+                    audit_status_badge = "✅ VERIFIED (REPO)"
+                elif audit_report.status.value == "verified":
+                    audit_status_badge = "✅ VERIFIED"
+                else:
+                    audit_status_badge = "⚠️ " + audit_report.status.value.upper()
 
                 summary_rows.append([
                     model_id,
@@ -249,6 +263,7 @@ def main():
                     "elapsed": elapsed,
                     "pdf_name": pdf_path.name,
                     "repo_recovered": repo_recovered,
+                    "outreach_draft": outreach_draft,
                 })
 
                 audit_notes = []
@@ -320,11 +335,38 @@ def main():
             "",
             summary_table_str,
             "",
+        ]
+
+        outreach_items = [it for it in detailed_reports if it.get("outreach_draft")]
+        if outreach_items:
+            md_lines.extend([
+                "---",
+                "",
+                "## ✉️ Scholarly Outreach Inquiries (Author Correspondence Drafts)",
+                "",
+                "The following manuscripts presented evaluation results primarily in visual or graphical format without scalar tables. The Delegation Layer automatically drafted formal academic inquiries for Human-in-the-Loop review:",
+                "",
+            ])
+            outreach_table = [
+                [
+                    it["model_id"],
+                    it["outreach_draft"].recipient.name,
+                    it["outreach_draft"].recipient.email or "N/A",
+                    ", ".join(it["outreach_draft"].target_datasets[:3]),
+                    ", ".join(it["outreach_draft"].target_figures[:2]),
+                    f"[{Path(it['outreach_draft'].draft_filepath).stem}.md](file://{it['outreach_draft'].draft_filepath.replace('.json', '.md')})" if it["outreach_draft"].draft_filepath else "Saved",
+                ]
+                for it in outreach_items
+            ]
+            md_lines.append(tabulate(outreach_table, headers=["Model", "Corresponding Author", "Email", "Target Datasets", "Target Figures", "Review Draft"], tablefmt="github"))
+            md_lines.append("")
+
+        md_lines.extend([
             "---",
             "",
             "## Detailed Per-Paper Comparisons",
             "",
-        ]
+        ])
 
         # Machine-readable JSON output data structure
         json_results = {

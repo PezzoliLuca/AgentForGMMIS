@@ -1,0 +1,31 @@
+{
+  "model_id": "Merlin",
+  "paper_title": "Merlin: A Computed Tomography Vision-Language Foundation Model and Dataset",
+  "recipient": {
+    "name": "Louis Blankemeier",
+    "email": "akshaysc@stanford.edu",
+    "affiliation": "Stanford University, University of Wisconsin-Madison, Hospital Israelita Albert Einstein, University Hospital Zurich, University of California Berkeley, Chang Gung Memorial Hospital at Linkou",
+    "is_corresponding": true,
+    "confidence": 1.0
+  },
+  "target_datasets": [
+    "Internal Clinical Dataset",
+    "External Clinical Dataset",
+    "VerSe"
+  ],
+  "target_figures": [
+    "Figure 1",
+    "Figure 10",
+    "Figure 3",
+    "Figure 9",
+    "Figure 8b",
+    "Figure 12",
+    "Figure 15"
+  ],
+  "email_subject": "[Academic Inquiry] Quantitative evaluation metrics for \"Merlin: A Computed Tomography Vision-Language Foundation Model and Dataset\" (Merlin)",
+  "email_body": "Dear Prof./Dr. Louis Blankemeier,\n\nI hope this email finds you well.\n\nI am reaching out on behalf of the Generalist Medical 3D Segmentation (GMMIS) benchmark initiative at the Department of Electronics, Information and Bioengineering (DEIB), Politecnico di Milano.\n\nWe have read with great interest your paper:\n\"Merlin: A Computed Tomography Vision-Language Foundation Model and Dataset\",\nwhich presents Merlin. As part of our comprehensive open-access study cataloging 3D medical foundation models, we are systematically evaluating published architectures across standardized radiological benchmarks.\n\nIn your manuscript, the quantitative results for the Internal Clinical Dataset, External Clinical Dataset and VerSe benchmarks appear to be reported primarily in graphical format (Figure 1, Figure 10, Figure 3, Figure 9, Figure 8b, Figure 12, Figure 15) without explicit scalar numerical values (e.g. Mean Dice Similarity Coefficient / standard deviation in tabular format).\n\nTo ensure that Merlin is accurately and fairly represented in the benchmark and comparative meta-analysis, without relying on approximate coordinate readings from charts, would your team be willing to share the underlying numerical Mean Dice scores for these evaluations?\n\nEven a brief tabular summary, raw CSV export, or evaluation log snippet would be immensely valuable for the community. Your work will be fully cited and credited in the GMMIS public database and corresponding survey publication.\n\nThank you very much for your time, consideration, and dedication to open science.\n\nSincerely,\n\nLuca Pezzoli\nDepartment of Electronics, Information and Bioengineering (DEIB)\nPolitecnico di Milano, Milan, Italy\nEmail: luca.pezzoli@polimi.it\nGitHub: https://github.com/PezzoliLuca/AgentForGMMIS\n",
+  "created_at": "2026-10-13T21:03:07",
+  "status": "draft_pending_review",
+  "notes": "Triggered by AuditReport: status=needs_outreach, diagnosis=missing_table_figures_found",
+  "draft_filepath": "/Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.json"
+}

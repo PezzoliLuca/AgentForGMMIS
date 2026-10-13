@@ -597,12 +597,14 @@ class RepoInspector:
         self,
         extracted: ExtractedPaperData,
         auditor: Optional[Any] = None,
+        manuscript: Optional[Any] = None,
     ) -> Tuple[ExtractedPaperData, Optional[Any]]:
         """Inspects paper's code repository if available, merges new scores, and optionally re-audits.
 
         Args:
             extracted: The ExtractedPaperData containing code_repository_url.
-            auditor: Optional AuditorAgent instance to re-audit paper upon score recovery.
+            auditor: Optional AuditorAgent instance to re-audit paper upon score recovery or failure.
+            manuscript: Optional ParsedManuscript to evaluate visual figures if repo lacks tables.
 
         Returns:
             Tuple of (updated_extracted_data, optional_audit_report).
@@ -645,6 +647,10 @@ class RepoInspector:
                     new_scores_added += 1
 
             if new_scores_added > 0 and auditor is not None:
-                audit_report = auditor.audit(extracted)
+                audit_report = auditor.audit(extracted, manuscript=manuscript)
+        elif auditor is not None:
+            # Repository was inspected, but contained no quantitative benchmark tables.
+            # Re-audit with repo_inspected=True so Auditor can transition to NEEDS_OUTREACH.
+            audit_report = auditor.audit(extracted, manuscript=manuscript, repo_inspected=True)
 
         return extracted, audit_report

@@ -666,7 +666,45 @@ Implement Phase 3.2 Part 2: the **`OutreachAgent`**, closing the delegation loop
     6. Dual JSON & Markdown draft persistence and Pydantic deserialization validation.
     7. Automated triage upon receiving `AuditStatus.NEEDS_OUTREACH`.
     8. Graceful bypass when reports are certified `AuditStatus.VERIFIED`.
-  * **Result**: All 8 tests passing. Full suite **57/57 unit tests green in 0.41s**.
+---
+
+## STEP 18 — Local 20-Paper Benchmark Validation (Gemini 3.1 Flash Lite) & Automated Outreach Verification
+
+### 1. Goal
+Execute a comprehensive local benchmark run across **20 scientific papers** from the GMMIS literature benchmark on the user workstation (`macOS`), completely isolating and preserving the ongoing SLURM job `5101` and weight pre-caching on the Mufasa cluster. Specifically, validate the end-to-end delegation loop of "Il Vigile" (`AuditorAgent`), ensuring that papers presenting visual/graphical metrics without scalar tables trigger `RepoInspector`, diagnose missing tables, transition to `AuditStatus.NEEDS_OUTREACH`, and automatically draft formal author inquiry emails via `OutreachAgent`.
+
+### 2. Execution Setup & Architecture
+* **Environment**: Local workstation macOS, Python 3.13 venv (`.venv`). Mufasa cluster left 100% untouched.
+* **LLM Model**: Google Gemini Free Tier (`gemini-3.1-flash-lite`), with automated exponential backoff retry and fallback to `gemini-3.8-flash` on rate-limit / 503 spikes.
+* **Paper Sample**: Top 20 arXiv models from `database.sqlite` with verified survey ground truth:
+  `KnowSAM`, `IMIS-Net`, `TP-Mamba`, `Medical SAM 2 (MedSAM-2)`, `Biomedical SAM-2 (BioSAM-2)`, `FLAP-SAM`, `Merlin`, `BrainSegFounder`, `TotalSegmentator MRI`, `MoME`, `BiomedParse`, `LHU-Net`, `SFR SAM`, `MEA M-SAM`, `SAT`, `Med-SA`, `SegVol`, `SAM-Med3D`, `SAM3D`, `MA-SAM`.
+* **Execution Command**:
+  ```bash
+  .venv/bin/python3 scripts/run_batch_benchmark.py \
+      --provider gemini \
+      --model gemini-3.1-flash-lite \
+      --count 20 \
+      --output-dir logs/local_gemini_20
+  ```
+
+### 3. Key Findings & Delegation Layer Validation
+1. **End-to-End Extraction & Auditing**:
+   - 20 papers processed end-to-end with high throughput (~8-15s per paper).
+   - High precision: multiple models achieved exact `Dice MAE: 0.0000` against human survey ground truth (`KnowSAM`, `TP-Mamba`, `MedSAM-2`, `BioSAM-2`, `FLAP-SAM`, `BrainSegFounder`, `TotalSegmentator MRI`, `MEA M-SAM`, `Med-SA`, `SAM-Med3D`, `SAM3D`, `MA-SAM`).
+2. **Empirical Outreach Verification (`Merlin`)**:
+   - Paper: *Merlin: A Computed Tomography Vision-Language Foundation Model and Dataset* (`2406.06512.pdf`).
+   - The paper reports evaluations on TotalSegmentator / VerSe in graphical charts without scalar numerical tables.
+   - **Delegation Flow**:
+     1. `AuditorAgent` diagnosed missing scalar tables and flagged code repository availability (`https://github.com/StanfordMIMI/Merlin`).
+     2. `RepoInspector` inspected the GitHub repository, verifying that no evaluation tables or metric CSVs exist.
+     3. Auditor transitioned diagnosis to `MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND` $\rightarrow$ status `AuditStatus.NEEDS_OUTREACH`.
+     4. `OutreachAgent` parsed author front matter, identified corresponding author **Louis Blankemeier** (`akshaysc@stanford.edu`, Stanford University), identified missing target figures (`Figure 1, Figure 10, Figure 3, Figure 9, Figure 8b, Figure 12, Figure 15`), and drafted a formal English academic email under Politecnico di Milano DEIB attribution.
+     5. Saved review artifacts to [`data/outreach_drafts/merlin_outreach.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.md) and [`data/outreach_drafts/merlin_outreach.json`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.json).
+3. **Artifacts & Reports**:
+   - Full log: [`logs/local_gemini_20/batch_benchmark_20261013_210112.log`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/local_gemini_20/batch_benchmark_20261013_210112.log)
+   - Aggregated Markdown report: [`logs/local_gemini_20/latest_batch_benchmark.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/local_gemini_20/latest_batch_benchmark.md)
+   - Aggregated JSON results: [`logs/local_gemini_20/batch_benchmark_results_20261013_210112.json`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/local_gemini_20/batch_benchmark_results_20261013_210112.json)
+
 
 
 

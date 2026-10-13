@@ -131,6 +131,7 @@ class AuditorAgent:
         extracted: ExtractedPaperData,
         manuscript: Optional[ParsedManuscript] = None,
         benchmark_mode: bool = False,
+        repo_inspected: bool = False,
     ) -> AuditReport:
         """
         Performs comprehensive multi-dimensional audit of extracted paper data.
@@ -143,6 +144,8 @@ class AuditorAgent:
                 If False (autonomous deploy mode for new literature / zero-shot DB construction),
                 relies purely on intrinsic physical, architectural, self-consistency,
                 and historical dataset distributions.
+            repo_inspected: If True, indicates that the code repository was already inspected
+                and yielded no quantitative evaluation tables, allowing transition to outreach.
 
         Returns:
             AuditReport certifying or flagging the extraction.
@@ -532,12 +535,13 @@ class AuditorAgent:
                         figures_found = True
                         break
 
-            if (len(scalar_scores) == 0 or has_cloned_template_hallucination) and figures_found and not extracted.code_repository_url:
-                data_diagnosis = MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
-            elif extracted.code_repository_url:
-                data_diagnosis = MissingDataDiagnosis.CODE_REPO_AVAILABLE
-            elif len(scalar_scores) == 0 or has_cloned_template_hallucination:
-                data_diagnosis = MissingDataDiagnosis.MISSING_TABLE_NO_DATA
+            if (len(scalar_scores) == 0 or has_cloned_template_hallucination):
+                if extracted.code_repository_url and not repo_inspected:
+                    data_diagnosis = MissingDataDiagnosis.CODE_REPO_AVAILABLE
+                elif figures_found:
+                    data_diagnosis = MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
+                else:
+                    data_diagnosis = MissingDataDiagnosis.MISSING_TABLE_NO_DATA
 
         # -------------------------------------------------------------
         # 6. Status Certification & Confidence Calculation

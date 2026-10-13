@@ -18,7 +18,7 @@ class LLMConfig:
     """Configuration for LLM inference."""
 
     provider: str = os.getenv("LLM_PROVIDER", "gemini")
-    model: str = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
+    model: str = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")
     api_key: Optional[str] = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
     base_url: Optional[str] = os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
     temperature: float = 0.0
@@ -132,7 +132,7 @@ class LLMClient:
             max_retries = 5
             backoff = 4.0
             current_model = self.config.model
-            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+            fallback_models = ["gemini-3.1-flash-lite", "gemini-3.8-flash"]
             for attempt in range(max_retries):
                 try:
                     response = self._gemini_client.models.generate_content(
@@ -143,12 +143,12 @@ class LLMClient:
                     break
                 except Exception as exc:
                     err_msg = str(exc)
-                    if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
+                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
                         if attempt < max_retries - 1:
                             if attempt >= 1 and attempt < len(fallback_models):
                                 current_model = fallback_models[attempt]
-                                print(f"   ⚠️ [Google AI Studio 503] Switching to fallback model '{current_model}'...")
-                            print(f"   ⚠️ [Google AI Studio 503 High Demand] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
+                                print(f"   ⚠️ [Google AI Studio RateLimit/503] Switching to fallback model '{current_model}'...")
+                            print(f"   ⚠️ [Google AI Studio RateLimit/503] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 15.0)
                             continue
@@ -277,12 +277,29 @@ class LLMClient:
             )
             if system_prompt:
                 config_obj.system_instruction = system_prompt
-            response = self._gemini_client.models.generate_content(
-                model=self.config.model,
-                contents=prompt,
-                config=config_obj,
-            )
-            return response.text or ""
+            import time
+            current_model = self.config.model
+            fallback_models = ["gemini-3.1-flash-lite", "gemini-3.8-flash"]
+            backoff = 3.0
+            for attempt in range(4):
+                try:
+                    response = self._gemini_client.models.generate_content(
+                        model=current_model,
+                        contents=prompt,
+                        config=config_obj,
+                    )
+                    return response.text or ""
+                except Exception as exc:
+                    err_msg = str(exc)
+                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
+                        if attempt < 3:
+                            if attempt >= 1 and attempt < len(fallback_models):
+                                current_model = fallback_models[attempt]
+                            time.sleep(backoff)
+                            backoff = min(backoff * 1.5, 10.0)
+                            continue
+                    raise exc
+            return ""
 
         messages: List[Dict[str, str]] = []
         if system_prompt:
