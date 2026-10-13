@@ -603,5 +603,37 @@ Following consultations on the thesis methodology, advance the system from a 1:1
   * Tested [`scripts/run_batch_benchmark.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_batch_benchmark.py) in dual-agent mode:
     - Successfully extracted, audited consensus, and logged dual-agent metrics.
 
+---
+
+## STEP 16 — Dual-Agent 20-Paper Benchmark Launch (Qwen 2.5 14B AWQ vs Gemini 3.1 Flash Lite) & Mufasa Model Pre-Caching
+
+### 1. Goal
+Execute empirical validation of the triadic consensus pipeline across **20 scientific papers** from the GMMIS literature benchmark, comparing an on-premise sovereign model (Agent A: Qwen 2.5 14B AWQ on Politecnico di Milano DEIB Mufasa HPC) against a frontier commercial API (Agent B: Google Gemini 3.1 Flash Lite). Simultaneously, pre-cache open weights on Mufasa for upcoming comparative thesis experiments (LLaMA 3.1, DeepSeek-R1 Distill, GLM-4, and Kimi/Moonlight).
+
+### 2. SLURM Dual Benchmark Job Configuration
+* **Job Script**: [`scripts/mufasa/run_dual_benchmark_mufasa.sh`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/mufasa/run_dual_benchmark_mufasa.sh)
+* **Submitted SLURM Job ID**: `5101`
+* **Partition / Hardware**: `jobs` partition on node `gn01`, `#SBATCH --gres=gpu:3g.20gb:1` (NVIDIA A100 20GB MIG slice, 32GB RAM, 4 CPUs)
+* **Agent A (On-Premise Sovereign)**:
+  - Model: `Qwen/Qwen2.5-14B-Instruct-AWQ`
+  - Serving Engine: `vllm serve` on port 8000 with `--max-model-len 32768 --gpu-memory-utilization 0.90 --enforce-eager`
+* **Agent B (Frontier Commercial)**:
+  - Model: `gemini-3.1-flash-lite` (with automated exponential backoff fallback on 503 high-demand spikes to `gemini-flash-latest`)
+  - Integration: Native `google-genai` SDK with strict JSON Schema structured output
+* **Arbitration**: `AuditorAgent.audit_consensus()` with $\epsilon = 0.01$ threshold, alias canonicalization, and inter-annotator agreement metrics
+* **Paper Sample**: Top 20 arXiv medical 3D segmentation papers with verified survey ground truth (`KnowSAM`, `IMIS-Net`, `TP-Mamba`, `MedSAM-2`, `BioSAM-2`, `FLAP-SAM`, `Merlin`, etc.)
+
+### 3. Open Model Acquisition on Mufasa HPC
+* **Download Script**: [`scripts/mufasa/download_open_models.sh`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/mufasa/download_open_models.sh)
+* **Process**: Launched via `nohup` on login node (PID `3325769`), logging to `logs/download_models.log`
+* **Model Families Pre-Cached**:
+  1. **Qwen (Alibaba)**: `Qwen/Qwen2.5-14B-Instruct-AWQ` (11 GB) — ✅ *Cached & Verified*
+  2. **LLaMA (Meta)**: `hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4` (~5.5 GB) — 📥 *Downloading*
+  3. **DeepSeek (DeepSeek AI)**: `casperhansen/deepseek-r1-distill-qwen-14b-awq` (~9 GB) — ⏳ *Queued*
+  4. **GLM (Zhipu AI / Tsinghua)**: `THUDM/glm-4-9b-chat` (~18 GB) — ⏳ *Queued*
+  5. **Kimi (Moonshot AI)**: `moonshotai/Moonlight-16B-A3B-Instruct` (~15 GB MoE, 3B active) — ⏳ *Queued*
+* **Cluster Storage**: 181 GB free on `/home` mount; estimated total weight footprint ~48 GB.
+
+
 
 
