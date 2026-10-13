@@ -58,7 +58,7 @@ case "$TARGET" in
         download_repo "Qwen/Qwen2.5-14B-Instruct-AWQ" "Qwen 2.5 14B AWQ (Alibaba)"
         ;;
     llama)
-        download_repo "casperhansen/llama-3.1-8b-instruct-awq" "Llama 3.1 8B Instruct AWQ (Meta)"
+        download_repo "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4" "Llama 3.1 8B Instruct AWQ (Meta / Hugging Face Quant)"
         ;;
     deepseek)
         download_repo "casperhansen/deepseek-r1-distill-qwen-14b-awq" "DeepSeek R1 Distill Qwen 14B AWQ (DeepSeek AI)"
@@ -72,7 +72,7 @@ case "$TARGET" in
     all)
         echo "🚀 Downloading ALL 5 Model Families for the Thesis Comparative Benchmark..."
         download_repo "Qwen/Qwen2.5-14B-Instruct-AWQ" "Qwen 2.5 14B AWQ (Alibaba)"
-        download_repo "casperhansen/llama-3.1-8b-instruct-awq" "Llama 3.1 8B Instruct AWQ (Meta)"
+        download_repo "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4" "Llama 3.1 8B Instruct AWQ (Meta / Hugging Face Quant)"
         download_repo "casperhansen/deepseek-r1-distill-qwen-14b-awq" "DeepSeek R1 Distill Qwen 14B AWQ (DeepSeek AI)"
         download_repo "THUDM/glm-4-9b-chat" "GLM-4 9B Chat (Zhipu AI / Tsinghua)"
         download_repo "moonshotai/Moonlight-16B-A3B-Instruct" "Moonlight 16B A3B Instruct (Moonshot AI / Kimi Family)"

@@ -44,7 +44,7 @@ export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME
 export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
 
 MODEL_NAME=${1:-"Qwen/Qwen2.5-14B-Instruct-AWQ"}
-GEMINI_MODEL=${GEMINI_MODEL:-"gemini-3.5-flash-lite"}
+GEMINI_MODEL=${GEMINI_MODEL:-"gemini-3.1-flash-lite"}
 PORT=8000
 COUNT=${2:-20}
 
