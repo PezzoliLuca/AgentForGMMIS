@@ -132,7 +132,7 @@ class LLMClient:
             max_retries = 5
             backoff = 4.0
             current_model = self.config.model
-            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-latest"]
+            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-latest"]
             for attempt in range(max_retries):
                 try:
                     response = self._gemini_client.models.generate_content(
@@ -145,8 +145,8 @@ class LLMClient:
                     err_msg = str(exc)
                     if "503" in err_msg or "UNAVAILABLE" in err_msg or "high demand" in err_msg.lower():
                         if attempt < max_retries - 1:
-                            if attempt >= 1 and current_model != fallback_models[-1]:
-                                current_model = fallback_models[-1]
+                            if attempt >= 1 and attempt < len(fallback_models):
+                                current_model = fallback_models[attempt]
                                 print(f"   ⚠️ [Google AI Studio 503] Switching to fallback model '{current_model}'...")
                             print(f"   ⚠️ [Google AI Studio 503 High Demand] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
                             time.sleep(backoff)
