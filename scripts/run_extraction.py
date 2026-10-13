@@ -21,6 +21,10 @@ def main():
     parser.add_argument("--arxiv", type=str, default=None, help="arXiv ID or URL (e.g. 2408.00874) to download and extract automatically")
     parser.add_argument("--provider", type=str, default=None, help="LLM provider: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.5-flash-lite)")
+    parser.add_argument("--provider-a", type=str, default=None, help="LLM provider for Agent A (default: --provider or gemini)")
+    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.5-flash-lite)")
+    parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
+    parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If set, runs dual-agent parallel consensus mode.")
     parser.add_argument("--api-key", type=str, default=None, help="API key (optional if set in environment or .env)")
     parser.add_argument("--evaluate", action="store_true", help="Compare extracted scores against database.sqlite ground truth")
     parser.add_argument(
@@ -48,9 +52,13 @@ def main():
 
     # Check API key configuration
     api_key = args.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    provider = args.provider or os.getenv("LLM_PROVIDER", "gemini")
+    provider_a = args.provider_a or args.provider or os.getenv("LLM_PROVIDER", "gemini")
+    model_a = args.model_a or args.model or os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
+    provider_b = args.provider_b or provider_a
+    model_b = args.model_b
+    is_dual = model_b is not None
 
-    if provider != "mock" and not api_key:
+    if (provider_a != "mock" and not api_key) or (is_dual and provider_b != "mock" and not api_key):
         print("\n" + "=" * 70)
         print("⚠️  MISSING API KEY")
         print("To run live extraction, you need a free Google Gemini API key.")
@@ -63,16 +71,32 @@ def main():
         sys.exit(1)
 
     print(f"\n📄 Ingesting and parsing manuscript: {pdf_file.name}...")
-    llm_config = LLMConfig(
-        provider=provider,
-        model=args.model or os.getenv("LLM_MODEL", "gemini-3.5-flash-lite"),
-        api_key=api_key,
-    )
-    llm_client = LLMClient(config=llm_config)
-    agent = ExtractionAgent(llm_client=llm_client)
+    from agent_gmmis.extraction.pdf_parser import PDFParser
+    manuscript = PDFParser.parse(pdf_file)
 
-    print(f"🤖 Invoking ExtractionAgent with model: {llm_config.model} (provider: {llm_config.provider})...")
-    extracted_data = agent.process_pdf(pdf_file)
+    if is_dual:
+        from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
+        from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
+        client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, api_key=api_key))
+        agent_a = ExtractionAgent(llm_client=client_a)
+        client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, api_key=api_key))
+        agent_b = ExtractionAgent(llm_client=client_b)
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        print(f"🤖 Invoking DualExtractionCoordinator in parallel:")
+        print(f"   • Agent A: {provider_a} ({model_a})")
+        print(f"   • Agent B: {provider_b} ({model_b})")
+        extracted_data_a, extracted_data_b = coordinator.extract_manuscript_parallel(manuscript)
+        extracted_data = extracted_data_a
+    else:
+        llm_config = LLMConfig(
+            provider=provider_a,
+            model=model_a,
+            api_key=api_key,
+        )
+        llm_client = LLMClient(config=llm_config)
+        agent = ExtractionAgent(llm_client=llm_client)
+        print(f"🤖 Invoking ExtractionAgent with model: {llm_config.model} (provider: {llm_config.provider})...")
+        extracted_data = agent.process_manuscript(manuscript)
 
     # Display Extracted Metadata
     print("\n" + "=" * 70)
@@ -116,7 +140,7 @@ def main():
             scores_table.append([
                 s.dataset_name,
                 s.organ_or_task,
-                f"{s.dice_score:.4f}",
+                f"{s.dice_score:.4f}" if s.dice_score is not None else "N/A",
                 s.prompt_type or "N/A",
                 s.table_or_section_ref or "N/A",
                 "Baseline" if s.is_baseline_comparison else "Proposed",
@@ -127,22 +151,72 @@ def main():
         print("No numerical evaluation scores extracted.")
 
     # -------------------------------------------------------------
-    # Step 3.1: AuditorAgent ("Il Vigile" - Quality Assurance Critic)
+    # Step 3.1: AuditorAgent ("Il Vigile" - Quality Assurance Critic / Arbiter)
     # -------------------------------------------------------------
     from agent_gmmis.auditing.auditor import AuditorAgent
-    from agent_gmmis.extraction.pdf_parser import PDFParser
 
     print("\n" + "=" * 70)
     print("👮 AUDITOR AGENT ('IL VIGILE') QUALITY ASSURANCE CERTIFICATION")
     print("=" * 70)
     db = DatabaseManager(DEFAULT_DB_PATH)
     auditor = AuditorAgent(db_manager=db)
-    manuscript = PDFParser.parse(pdf_file)
-    audit_report = auditor.audit(
-        extracted_data,
-        manuscript=manuscript,
-        benchmark_mode=bool(args.ground_truth_id),
-    )
+
+    if is_dual:
+        audit_report = auditor.audit_consensus(
+            extracted_data_a,
+            extracted_data_b,
+            manuscript=manuscript,
+            benchmark_mode=bool(args.evaluate or args.model_id),
+        )
+        # Display Consensus Matrix
+        print("\n" + "=" * 70)
+        print("🤝 DUAL-AGENT INTER-MODEL CONSENSUS MATRIX")
+        print("=" * 70)
+        cons_rows = [
+            [
+                cs.canonical_dataset_name,
+                cs.organ_or_task or "N/A",
+                f"{cs.score_a:.4f}" if cs.score_a is not None else "—",
+                f"{cs.score_b:.4f}" if cs.score_b is not None else "—",
+                f"{cs.delta:.4f}" if cs.delta is not None else "—",
+                f"{cs.resolved_score:.4f}" if cs.resolved_score is not None else "DISPUTED",
+                cs.status.value.upper(),
+            ]
+            for cs in audit_report.consensus_scores
+        ]
+        print(tabulate(cons_rows, headers=["Dataset", "Organ/Task", f"Score A ({model_a})", f"Score B ({model_b})", "Delta", "Resolved", "Status"], tablefmt="github"))
+        mae_disp = f"{audit_report.inter_model_dice_mae:.4f}" if audit_report.inter_model_dice_mae is not None else "N/A"
+        print(f"\nInter-Model Dice MAE: {mae_disp}")
+        print(f"Concordance Rate: {audit_report.concordance_rate*100:.1f}% ({audit_report.concordant_count} concordant, {audit_report.dispute_count} disputed, {audit_report.unconfirmed_count} unconfirmed / {audit_report.total_unique_benchmarks} total)")
+
+        # Reconcile scores for downstream evaluation
+        reconciled_scores = []
+        for cs in audit_report.consensus_scores:
+            if cs.resolved_score is not None:
+                reconciled_scores.append(
+                    RawExtractedScore(
+                        dataset_name=cs.canonical_dataset_name,
+                        organ_or_task=cs.organ_or_task or "Overall",
+                        dice_score=cs.resolved_score,
+                        prompt_type=cs.prompt_type,
+                        table_or_section_ref=cs.table_ref_a or cs.table_ref_b,
+                    )
+                )
+        extracted_data = ExtractedPaperData(
+            paper_title=extracted_data_a.paper_title,
+            proposed_model_id=audit_report.consensus_metadata.resolved_model_id,
+            visual_backbone=audit_report.consensus_metadata.resolved_visual_backbone,
+            millions_of_parameters=audit_report.consensus_metadata.resolved_params_m,
+            code_repository_url=audit_report.consensus_metadata.code_repository_url,
+            screening=extracted_data_a.screening,
+            extracted_scores=reconciled_scores,
+        )
+    else:
+        audit_report = auditor.audit(
+            extracted_data,
+            manuscript=manuscript,
+            benchmark_mode=bool(args.evaluate or args.model_id),
+        )
 
     status_icon = (
         "✅"

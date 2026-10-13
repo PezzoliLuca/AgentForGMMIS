@@ -90,3 +90,131 @@ class RepoInspectionResult(BaseModel):
     )
     message: str = Field("", description="Status message, summary, or error explanation")
     cache_path: Optional[str] = Field(None, description="Local filesystem path where repository is cached")
+
+
+class ConsensusStatus(str, Enum):
+    """Agreement status between dual extraction agents."""
+
+    CONCORDANT = "concordant"
+    DISPUTED = "disputed"
+    SINGLE_AGENT_UNCONFIRMED = "single_agent_unconfirmed"
+
+
+class ConsensusScore(BaseModel):
+    """Individual benchmark score evaluated under dual-agent consensus."""
+
+    dataset_name: str
+    canonical_dataset_name: str
+    organ_or_task: Optional[str] = None
+    status: ConsensusStatus
+    score_a: Optional[float] = None
+    score_b: Optional[float] = None
+    resolved_score: Optional[float] = Field(
+        None,
+        description="Unified score if concordant or verified; None if disputed.",
+    )
+    delta: Optional[float] = Field(
+        None,
+        description="Absolute difference between score_a and score_b when both are present.",
+    )
+    table_ref_a: Optional[str] = None
+    table_ref_b: Optional[str] = None
+    prompt_type: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ConsensusScreening(BaseModel):
+    """Consensus agreement on inclusion screening criteria."""
+
+    status: ConsensusStatus
+    is_included: bool
+    is_3d_a: bool
+    is_3d_b: bool
+    is_radiological_a: bool
+    is_radiological_b: bool
+    is_public_a: bool
+    is_public_b: bool
+    has_dice_a: bool
+    has_dice_b: bool
+    notes: Optional[str] = None
+
+
+class ConsensusMetadata(BaseModel):
+    """Consensus agreement on architectural parameters and model metadata."""
+
+    model_id_status: ConsensusStatus
+    resolved_model_id: str
+    model_id_a: str
+    model_id_b: str
+    params_status: ConsensusStatus
+    resolved_params_m: Optional[float] = None
+    params_m_a: Optional[float] = None
+    params_m_b: Optional[float] = None
+    visual_backbone_a: Optional[str] = None
+    visual_backbone_b: Optional[str] = None
+    resolved_visual_backbone: Optional[str] = None
+    code_repository_url: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ConsensusAuditReport(BaseModel):
+    """Comprehensive dual-agent consensus and arbitration certificate."""
+
+    model_id: str
+    status: AuditStatus
+    consensus_scores: List[ConsensusScore] = Field(default_factory=list)
+    consensus_screening: ConsensusScreening
+    consensus_metadata: ConsensusMetadata
+    inter_model_dice_mae: Optional[float] = Field(
+        None,
+        description="Mean absolute difference across paired benchmark scores between Model A and Model B.",
+    )
+    concordance_rate: float = Field(
+        0.0,
+        description="Percentage of common benchmarks that are concordant within tolerance.",
+    )
+    concordant_count: int = 0
+    dispute_count: int = 0
+    unconfirmed_count: int = 0
+    total_unique_benchmarks: int = 0
+    audit_report_a: AuditReport
+    audit_report_b: AuditReport
+    confidence_score: float = Field(1.0, description="Overall certified confidence score [0.0, 1.0]")
+    summary: str = ""
+
+    @property
+    def passed_sanity_checks(self) -> bool:
+        """True if both agents passed numerical and architectural sanity checks."""
+        return self.audit_report_a.passed_sanity_checks and self.audit_report_b.passed_sanity_checks
+
+    @property
+    def passed_inclusion_screening(self) -> bool:
+        """True if consensus resolved inclusion criteria as eligible."""
+        return self.consensus_screening.is_included
+
+    @property
+    def rejection_reasons(self) -> List[str]:
+        """Consolidated list of unique rejection reasons across both agents."""
+        return list(dict.fromkeys(self.audit_report_a.rejection_reasons + self.audit_report_b.rejection_reasons))
+
+    @property
+    def anomalies(self) -> List[AuditAnomaly]:
+        """Consolidated list of anomalies flagged across both agents."""
+        return self.audit_report_a.anomalies + self.audit_report_b.anomalies
+
+    @property
+    def outliers(self) -> List[OutlierDetectionResult]:
+        """Consolidated list of statistical outliers flagged across both agents."""
+        return self.audit_report_a.outliers + self.audit_report_b.outliers
+
+    @property
+    def discrepancies(self) -> List[DiscrepancyNotice]:
+        """Consolidated list of human survey discrepancies intercepted across both agents."""
+        return self.audit_report_a.discrepancies + self.audit_report_b.discrepancies
+
+    @property
+    def data_diagnosis(self) -> MissingDataDiagnosis:
+        """Consensus missing data diagnosis."""
+        if self.audit_report_a.data_diagnosis != MissingDataDiagnosis.NONE:
+            return self.audit_report_a.data_diagnosis
+        return self.audit_report_b.data_diagnosis

@@ -323,3 +323,57 @@ Keep these points in mind when drafting chapters of the final dissertation:
       4. *Operational Autonomy & Privacy*: Running Qwen-14B on Mufasa guarantees full data sovereignty, zero external data leakage, and zero cost, satisfying clinical privacy regulations for institutional hospital deployment.
     * **Defense Impact**: Provides comprehensive empirical proof comparing proprietary frontier cloud LLMs against sovereign on-premise open-weights models, delivering quantitative data for Chapter 5 (Evaluation) of the Master's Thesis.
 
+25. **Dual-Agent Consensus Extraction & Epistemic Arbitration ('Il Vigile' as Multi-Model Arbiter)**:
+    * **The Core Scientific Problem**: In single-agent extraction (Actor-Critic 1-on-1), the system's extraction fidelity is tied to the idiosyncratic biases, context handling, or tokenization quirks of a single LLM architecture. If the model misinterprets a table layout or drops a column, the Critic has only intrinsic heuristics (range checks, distribution comparisons) to detect the flaw. If the single model hallucinates a plausible-sounding value within valid ranges, an intrinsic sanity check cannot catch it.
+    * **The Epistemic Diversity Paradigm**: In multi-agent consensus literature and epistemic decision theory (Condorcet's Jury Theorem applied to LLMs), combining two distinct, structurally independent model families (e.g., proprietary frontier cloud like Gemini paired with open-weights models like Qwen or Llama on the Mufasa cluster) drastically suppresses idiosyncratic hallucinations: two distinct models with different pre-training datasets, tokenizers, and architectures almost never hallucinate the exact same erroneous score or misinterpret a complex table in the exact same way.
+    * **Triadic Actor-Critic Architecture (Dual-Actor / Arbiter)**:
+      Instead of a 1:1 Actor-Critic topology, the architecture generalizes to a triadic coordination pattern:
+      ```
+                        ┌────────────────────────┐
+                        │   Manuscript / PDF     │
+                        └───────────┬────────────┘
+                                    │
+                     ┌──────────────┴──────────────┐
+                     ▼                             ▼
+           ┌───────────────────┐         ┌───────────────────┐
+           │ ExtractionAgent A │         │ ExtractionAgent B │
+           │   (Model A / LLM) │         │   (Model B / LLM) │
+           └─────────┬─────────┘         └─────────┬─────────┘
+                     │ Extracted A                 │ Extracted B
+                     └──────────────┬──────────────┘
+                                    ▼
+                      ┌───────────────────────────┐
+                      │   AuditorAgent (Vigile)   │
+                      │  - Inter-Agent Agreement  │
+                      │  - Discrepancy Detection  │
+                      │  - Sanity / SQLite Checks │
+                      │  - Epistemic Arbitration  │
+                      └─────────────┬─────────────┘
+                                    ▼
+                        ┌───────────────────────┐
+                        │ Reconciled Extraction │
+                        │ + Certified Report    │
+                        └───────────────────────┘
+      ```
+    * **Dynamic Model-Agnostic Parametrization**:
+      Crucial for thesis experimentation: the architecture decouples model identity from the agent role. The pipeline is fully parametrized via CLI/configs (`--model-a`, `--provider-a`, `--model-b`, `--provider-b`), allowing dynamic pairings (e.g. Gemini + Qwen, Llama + DeepSeek, Mistral + Qwen) to support a dedicated comparative chapter in the thesis.
+    * **Parallel Independent Execution**:
+      Both extractors process the manuscript concurrently (`ThreadPoolExecutor(max_workers=2)`). This guarantees independent extractions (avoiding anchoring bias where one model anchors on the other's draft) while maintaining execution speed ($\text{Wall-Clock Time} \approx \max(T_A, T_B)$).
+    * **Three-Tier Taxonomy of Extracted Benchmarks**:
+      The Auditor classifies each extracted score into one of three explicit, scientifically transparent states:
+      1. `CONCORDANT`: Both models extract the dataset and their Dice scores match within tolerance $|S_A - S_B| \le \epsilon$ ($\epsilon = 0.01$). The value is unified with maximum confidence boost.
+      2. `DISPUTED`: Both models identify the dataset, but their numerical values diverge significantly ($|S_A - S_B| > 0.01$). Rather than silently guessing via heuristics, the record is explicitly flagged as `DISPUTED`, preserving both candidate numbers ($S_A$ vs $S_B$) and triggering an audit warning.
+      3. `SINGLE_AGENT_UNCONFIRMED`: A benchmark extracted by only one agent (e.g., Model A captured a supplementary table that Model B overlooked). The benchmark is retained to preserve recall, but transparently flagged as `UNCONFIRMED` with reduced confidence.
+    * **Screening & Metadata Reconciliation**:
+      Inclusion screening (`is_3d`, `is_radiological`, `has_dice`) and metadata (`millions_of_parameters`, `visual_backbone`) are subjected to consensus:
+      - If both agree on screening, high confidence.
+      - If screening conflicts, the Auditor flags as disputed and applies domain fallback checks.
+      - If parameter counts conflict, the Auditor inspects architecture ranges and logs an anomaly.
+    * **Quantification of Epistemic Uncertainty & Inter-Annotator Agreement (IAA)**:
+      Provides rich academic metrics for Chapter 4/5 of the thesis:
+      - *Inter-Model Dice MAE* between Agent A and Agent B.
+      - *Consensus Agreement Rate* (% of benchmarks concordant).
+      - *Dispute Rate* (% of benchmarks disputed).
+      - Quantitative proof that concordant records correlate with near-zero error against human ground truth.
+    * **Defense Impact**: Elevates the thesis contribution from single-agent automation to a formal consensus-driven epistemological verification system, offering a principled framework for automated multi-model scientific curation.
+

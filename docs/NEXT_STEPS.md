@@ -2,8 +2,8 @@
 
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
-> **Last Updated**: `2026-10-08`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.2 Part 1 (`RepoInspector`)**, and **30-Paper Cross-Architecture Empirical Benchmark (Gemini 3.5 Flash vs Qwen2.5-14B on Mufasa)** Completed & Validated. `Med-SA` acronym false rejection resolved, prompt rules standardized. Next up: **Phase 3.2 Part 2 (`OutreachAgent`)** and **Phase 3.3 (`DatabaseAgent` / Curator)**.
+> **Last Updated**: `2026-10-13`  
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine)**, **Phase 3.2 Part 1 (`RepoInspector`)**, and **30-Paper Cross-Architecture Empirical Benchmark** Completed & Validated. Current Priority: **Phase 3.2 Part 2 (`OutreachAgent`)**, followed by **Phase 3.3 (`DatabaseAgent` / Curator)**.
 
 ---
 
@@ -39,62 +39,93 @@
 
 ---
 
-## 2. Immediate Objective: Phase 3.2 Part 2 (`OutreachAgent`) & Phase 3.3 (`DatabaseAgent`)
+## 2. Immediate Objective: Phase 3.1.5 (`Dual-Agent Consensus & Arbitration`), Phase 3.2 Part 2 (`OutreachAgent`) & Phase 3.3 (`DatabaseAgent`)
 
-With the Critic (`AuditorAgent`) operational, Step 3 advances to the **Delegation & Resolution Layer** for papers with missing or graphical benchmark tables:
+With the single-agent Critic (`AuditorAgent`) and `RepoInspector` operational, Step 3 advances to:
+1. **Phase 3.1.5**: Extending extraction to **Dual-Agent Parallel Consensus** with distinct models and multi-model arbitration by the Auditor.
+2. **Phase 3.2 Part 2**: **Delegation & Resolution Layer (`OutreachAgent`)** for author email drafting.
+3. **Phase 3.3**: **`DatabaseAgent`** for atomic SQLite curation and dynamic schema evolution.
 
-### Architecture of Step 3
+### Architecture of Step 3 (Dual-Actor / Arbiter & Delegation Flow)
 ```
-           ┌──────────────────────────────────────────────┐
-           │         ExtractionAgent (Actor)              │
-           └──────────────────────┬───────────────────────┘
-                                  │ (Raw Extracted Data)
-                                  ▼
-           ┌──────────────────────────────────────────────┐
-           │     AuditorAgent ("Il Vigile" / Critic)      │
-           │  - Numerical sanity checks ([0, 1], params)  │
-           │  - Historical baseline outlier detection     │
-           │  - Missing table diagnosis (figures vs text) │
-           └──────────────┬───────────────────────────────┘
-                          │
-          ┌───────────────┴───────────────────────────────┐
-          │ (If Missing / Anomalous)                      │ (If Validated)
-          ▼                                               ▼
-┌─────────────────────────┐                     ┌─────────────────────────┐
-│     Delegation Layer    │                     │      DatabaseAgent      │
-│ 1. GitHub Repo Inspector│                     │  - Harmonize aliases    │
-│    (Parse JSON/CSV logs)│                     │  - Compute Delta %      │
-│ 2. OutreachAgent        │                     │  - Atomic SQLite commit │
-│    (Draft author email) │                     └─────────────────────────┘
-└─────────────────────────┘
+                  ┌────────────────────────┐
+                  │   Manuscript / PDF     │
+                  └───────────┬────────────┘
+                              │
+               ┌──────────────┴──────────────┐
+               ▼ (Parallel Worker A)         ▼ (Parallel Worker B)
+     ┌───────────────────┐         ┌───────────────────┐
+     │ ExtractionAgent A │         │ ExtractionAgent B │
+     │  (e.g. Model A)   │         │  (e.g. Model B)   │
+     └─────────┬─────────┘         └─────────┬─────────┘
+               │ Extracted A                 │ Extracted B
+               └──────────────┬──────────────┘
+                              ▼
+            ┌──────────────────────────────────────────────┐
+            │     AuditorAgent ("Il Vigile" / Arbiter)     │
+            │  - Inter-agent agreement & discrepancy match │
+            │  - Categorization: CONCORDANT / DISPUTED /   │
+            │    SINGLE_AGENT_UNCONFIRMED                  │
+            │  - Numerical sanity checks ([0, 1], params)  │
+            │  - Historical baseline outlier detection     │
+            │  - Missing table diagnosis (figures vs text) │
+            └──────────────┬───────────────────────────────┘
+                           │
+           ┌───────────────┴───────────────────────────────┐
+           │ (If Missing / Needs Repo / Outreach)          │ (If Reconciled & Validated)
+           ▼                                               ▼
+ ┌─────────────────────────┐                     ┌─────────────────────────┐
+ │     Delegation Layer    │                     │      DatabaseAgent      │
+ │ 1. GitHub Repo Inspector│                     │  - Harmonize aliases    │
+ │    (Parse JSON/CSV logs)│                     │  - Compute Delta %      │
+ │ 2. OutreachAgent        │                     │  - Atomic SQLite commit │
+ │    (Draft author email) │                     └─────────────────────────┘
+ └─────────────────────────┘
 ```
 
 ### Action Items for Step 3 Implementation:
 
-#### 1. Implement `AuditorAgent` (`src/agent_gmmis/auditing/auditor.py`)
-* **Sanity Checks**:
-  * Verify Dice scores are within $[0.0, 1.0]$.
-  * Verify parameter counts match architecture scale (e.g. flag ViT-B claiming 10M params or CNN claiming 1000B).
-  * Validate inclusion criteria: reject non-3D, non-radiological (dermoscopy/fundus), or private-dataset papers.
-* **Outlier & Anomaly Detection**:
-  * Cross-reference extracted scores against historical distribution in `database.sqlite` (e.g., flag 0.99 DSC on pancreas tumors where state-of-the-art is ~0.68).
-* **Missing Data Diagnosis**:
-  * When a paper has 0 scalar scores (e.g. `BiomedParse`, `Merlin`): classify whether data is in visual figures (bar/radar charts) or supplementary appendix sections.
+#### 1. Implement `AuditorAgent` (`src/agent_gmmis/auditing/auditor.py`) — **COMPLETED & VALIDATED**
+* Sanity checks on physical ranges, parameter scaling, and inclusion criteria.
+* Statistical baseline outlier detection against historical SQLite distributions.
+* Missing data diagnosis triaging between text tables, visual charts, and GitHub repositories.
+* Multi-tier acronym compatibility (`_is_model_name_compatible_with_paper`).
 
-#### 2. Implement GitHub Repository Inspector (`src/agent_gmmis/auditing/repo_inspector.py`) — **COMPLETED**
+#### 2. Implement GitHub Repository Inspector (`src/agent_gmmis/auditing/repo_inspector.py`) — **COMPLETED & VALIDATED**
 * Ingests public repositories when manuscript tables are missing (`BiomedParse`).
 * Multi-format parser: Markdown tables (long & wide layouts), structured JSON results, CSV evaluation logs.
 * Resolves synonyms to canonical benchmarks via `DatasetAliasResolver`.
 * Seamless `inspect_and_update` integration with `AuditorAgent` recovering scores and re-certifying to `VERIFIED`.
-* Verified with 9 dedicated unit tests (39/39 tests green across suite).
+* Verified with 9 dedicated unit tests (41/41 tests green across suite).
 
-#### 3. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`) — **NEXT ACTION**
+#### 3. Implement Dual-Agent Consensus Extraction & Epistemic Arbitration Engine — **COMPLETED & VALIDATED**
+* **Dynamic Model-Agnostic Parametrization**:
+  * Decoupled models from agent logic; supports arbitrary pairings (Gemini + Qwen, Llama + DeepSeek, etc.) via CLI flags: `--model-a`, `--provider-a`, `--model-b`, `--provider-b`.
+  * Backward-compatible fallback to single-agent mode when Model B is omitted.
+* **`DualExtractionCoordinator` (`src/agent_gmmis/extraction/dual_coordinator.py`)**:
+  * Orchestrates two `ExtractionAgent` instances in parallel using `ThreadPoolExecutor(max_workers=2)`.
+  * Guaranteed independent extraction preventing anchoring bias.
+* **Consensus Schemas (`src/agent_gmmis/auditing/schemas.py`)**:
+  * `ConsensusStatus` enum: `CONCORDANT`, `DISPUTED`, `SINGLE_AGENT_UNCONFIRMED`.
+  * `ConsensusScore`, `ConsensusScreening`, `ConsensusMetadata`, and polymorphic `ConsensusAuditReport`.
+* **Consensus Auditing in `AuditorAgent` (`audit_consensus`)**:
+  * Semantic alignment of scores using `DatasetAliasResolver`.
+  * Tolerance threshold $\epsilon = 0.01$ (1% DSC) for `CONCORDANT` agreement.
+  * Discrepancies $> \epsilon$ flagged transparently as `DISPUTED` (preserving both candidate values).
+  * Benchmarks captured by only one agent marked as `SINGLE_AGENT_UNCONFIRMED` with proportional confidence adjustments.
+  * Computes **Inter-Annotator Agreement (IAA)** metrics for thesis dissertation (Inter-Model Dice MAE, Concordance Rate %).
+* **CLI Runners & Script Integration**:
+  * Updated [`scripts/run_batch_benchmark.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_batch_benchmark.py) and [`scripts/run_extraction.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_extraction.py) with dual-agent support and formatted Consensus Matrix rendering.
+* **Test Verification**:
+  * 8 dedicated unit tests in `tests/test_consensus_auditing.py` (49/49 total test suite passing in 0.40s).
+
+#### 4. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`) — **NEXT ACTION**
 * Direct operationalization of Moglia et al. methodology (*"In cases where the Dice score was only available in graphical form without explicit numerical values, we contacted the corresponding authors"*).
 * Automatically extracts corresponding author name, email, and institution from manuscript header.
 * Drafts a formal, polite academic inquiry email in English requesting numerical values for the specific benchmark figures.
 * Saves email draft for human-in-the-loop review before dispatch.
 
-#### 4. Implement `DatabaseAgent` (Curator Engine) (`src/agent_gmmis/curation/curator.py`)
+#### 5. Implement `DatabaseAgent` (Curator Engine) (`src/agent_gmmis/curation/curator.py`)
 * **Entity Resolution & Deduplication**:
   * Check if model already exists (via exact ID, arXiv ID, or title similarity) before insertion.
   * Resolve dataset synonyms using `DatasetAliasResolver`.

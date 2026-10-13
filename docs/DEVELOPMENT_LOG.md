@@ -547,5 +547,61 @@ To prevent non-hallucinatory discrepancies where LLMs extract valid numbers from
 2. **Table Prioritization (SOTA over Ablations)**: Mandatory instruction to prioritize primary comparative benchmark tables (*"Comparison with State-of-the-Art"*, *"Main Results"*, *"Test Set Evaluation"*) over internal ablation study tables (hyperparameter sweeps or validation sweeps).
 3. **Macro-Average Extraction**: Mandated extraction of `"Average"` / `"Mean"` rows on multi-organ or multi-class tables with `organ_or_task='Overall'` or `'Mean'`, aligning with literature survey indexing protocols.
 
+---
+
+## [2026-10-13] — Step 3.1.5: Design & Architecture: Dual-Agent Consensus Extraction & Epistemic Arbitration Engine
+
+### 1. Objective & Motivation
+Following consultations on the thesis methodology, advance the system from a 1:1 Actor-Critic architecture to a **Triadic Dual-Actor / Arbiter pattern**:
+* Rather than relying on a single LLM whose idiosyncratic biases or tokenization quirks could introduce unflagged errors, deploy **two distinct model families** in parallel as extractors.
+* Generalize the Critic (`AuditorAgent` / 'Il Vigile') into an **Arbiter** that measures inter-model agreement, transparently flags divergent numbers as `DISPUTED`, registers unconfirmed singletons, and issues certified consensus reports.
+* Ensure complete dynamic parametrization so that any model pair (e.g. Gemini + Qwen, Llama + DeepSeek, Mistral + Qwen) can be benchmarked for the comparative chapter of the thesis.
+
+### 2. Architecture & Design Decisions
+* **Model-Agnostic Dynamic Parametrization**:
+  * Decouple model identities from the agent logic. The extraction coordinator and CLI runners accept dynamic model and provider arguments (`--model-a`, `--provider-a`, `--model-b`, `--provider-b`).
+  * Backward-compatible: if Model B is omitted, seamlessly fallback to single-agent extraction.
+* **Parallel Independent Extraction (`DualExtractionCoordinator`)**:
+  * Execute `ExtractionAgent A` and `ExtractionAgent B` concurrently using `concurrent.futures.ThreadPoolExecutor(max_workers=2)`.
+  * Total wall-clock time is bounded by $\max(T_A, T_B)$ rather than serial sum $T_A + T_B$.
+  * Avoids anchoring bias: neither model sees the other's extractions prior to submission to the Auditor.
+* **Three-Tier Taxonomy for Extracted Benchmark Scores**:
+  1. `CONCORDANT`: Both models identify the dataset (resolved via `DatasetAliasResolver`) and their Dice scores match within tolerance $|S_A - S_B| \le \epsilon$ ($\epsilon = 0.01$). The value is unified with maximum confidence boost.
+  2. `DISPUTED`: Both models identify the dataset, but their numerical values diverge ($|S_A - S_B| > 0.01$). Rather than silently picking one via heuristics, the score is explicitly flagged as `DISPUTED`, preserving both candidate numbers ($S_A$ vs $S_B$) and raising an audit warning.
+  3. `SINGLE_AGENT_UNCONFIRMED`: A benchmark extracted by only one agent. Retained to preserve recall, but transparently flagged with reduced confidence weight.
+* **Screening & Metadata Consensus**:
+  * Boolean screening (`is_3d`, `is_radiological`, `has_dice`): unanimity increases confidence; disagreements trigger domain knowledge fallback and dispute notices.
+  * Architectural parameters (`millions_of_parameters`, `visual_backbone`): cross-checked against standard scaling ranges.
+* **Inter-Annotator Agreement (IAA) & Epistemic Uncertainty Quantification**:
+  * Dynamically compute academic agreement metrics:
+    - *Inter-Model Dice MAE*: average absolute difference between the models on common benchmarks.
+    - *Consensus Rate %*: ratio of concordant benchmarks over total unique benchmarks extracted.
+    - *Dispute Rate %*: ratio of conflicting benchmarks.
+
+### 3. Implementation Roadmap
+1. Define Pydantic consensus schemas in `src/agent_gmmis/auditing/schemas.py`: `ConsensusStatus`, `ConsensusScore`, `ConsensusScreening`, `ConsensusMetadata`, `ConsensusAuditReport`.
+2. Implement `DualExtractionCoordinator` in `src/agent_gmmis/extraction/dual_coordinator.py` with multi-threaded parallel execution.
+3. Implement `audit_consensus()` in `src/agent_gmmis/auditing/auditor.py` using `DatasetAliasResolver`.
+4. Update `scripts/run_batch_benchmark.py` and `scripts/run_extraction.py` to support dual model CLI flags and comparative logging.
+5. Create dedicated unit tests in `tests/test_consensus_auditing.py`.
+
+### 4. Verification & Empirical Validation
+* **Unit Testing**: Executed `.venv/bin/pytest tests/ -v`
+  * Added 8 dedicated unit tests in [`tests/test_consensus_auditing.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_consensus_auditing.py) testing:
+    - Parallel multi-threaded extraction via `DualExtractionCoordinator`.
+    - Full concordance certification (`VERIFIED`, MAE < 0.001, confidence boosted to 100%).
+    - Disputed score flagging (`DISPUTED`, no silent averaging, delta tracked).
+    - Unconfirmed single-agent score retention (`SINGLE_AGENT_UNCONFIRMED`).
+    - Screening criteria disputes and parameter scale divergence.
+    - Semantic alias alignment (`Beyond The Cranial Vault` $\leftrightarrow$ `BTCV`).
+    - Critical anomaly rejection propagation.
+  * **Result**: **49/49 unit tests passing** across the entire suite in **0.40s**.
+* **End-to-End CLI Pipeline Validation**:
+  * Tested [`scripts/run_extraction.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_extraction.py) on `medsam_arxiv.pdf` with `--provider-a mock --model-a mock-model-a --provider-b mock --model-b mock-model-b`:
+    - Parallel coordinator launched both workers concurrently.
+    - Cleanly rendered the **Dual-Agent Inter-Model Consensus Matrix** with exact concordance, delta calculations, and IAA metrics.
+  * Tested [`scripts/run_batch_benchmark.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_batch_benchmark.py) in dual-agent mode:
+    - Successfully extracted, audited consensus, and logged dual-agent metrics.
+
 
 

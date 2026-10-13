@@ -59,6 +59,10 @@ def main():
     )
     parser.add_argument("--provider", type=str, default=None, help="LLM provider: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.5-flash-lite)")
+    parser.add_argument("--provider-a", type=str, default=None, help="LLM provider for Agent A (default: --provider or gemini)")
+    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.5-flash-lite)")
+    parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
+    parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If specified, enables dual-agent parallel consensus mode.")
     parser.add_argument(
         "--compare-source",
         type=str,
@@ -111,34 +115,57 @@ def main():
                         if len(target_model_ids) >= args.count:
                             break
 
+        provider_a = args.provider_a or args.provider or "gemini"
+        model_a = args.model_a or args.model or "gemini-3.5-flash-lite"
+        provider_b = args.provider_b or provider_a
+        model_b = args.model_b
+        is_dual = model_b is not None
+
         start_time_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("\n" + "=" * 80)
         print("🔬 AGENT FOR GMMIS — BATCH EXTRACTION BENCHMARK")
         print(f"Timestamp:       {start_time_iso}")
         print(f"Papers to Test:  {len(target_model_ids)}")
         print(f"Target Models:   {', '.join(target_model_ids)}")
-        print(f"LLM Provider:    {args.provider or 'gemini'} ({args.model or 'gemini-3.5-flash-lite'})")
+        if is_dual:
+            print(f"Pipeline Mode:   Dual-Agent Parallel Consensus Extraction")
+            print(f"Agent A:         {provider_a} ({model_a})")
+            print(f"Agent B:         {provider_b} ({model_b})")
+        else:
+            print(f"Pipeline Mode:   Single-Agent Extraction")
+            print(f"LLM Provider:    {provider_a} ({model_a})")
         print(f"Ground Truth:    {args.compare_source.upper()} literature records")
         print(f"Log File:        {log_path}")
         print("=" * 80)
 
-        config_kwargs = {}
-        if args.provider:
-            config_kwargs["provider"] = args.provider
-        if args.model:
-            config_kwargs["model"] = args.model
-        llm_config = LLMConfig(**config_kwargs)
-        llm_client = LLMClient(config=llm_config)
-        agent = ExtractionAgent(llm_client=llm_client)
         evaluator = ExtractionEvaluator(db_manager=db)
 
         from agent_gmmis.auditing.auditor import AuditorAgent
         from agent_gmmis.auditing.repo_inspector import RepoInspector
         from agent_gmmis.auditing.schemas import AuditStatus
         from agent_gmmis.extraction.pdf_parser import PDFParser
+        from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
 
         auditor = AuditorAgent(db_manager=db)
         repo_inspector = RepoInspector()
+
+        if is_dual:
+            from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
+            client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a))
+            agent_a = ExtractionAgent(llm_client=client_a)
+            client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b))
+            agent_b = ExtractionAgent(llm_client=client_b)
+            coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        else:
+            config_kwargs = {}
+            if provider_a:
+                config_kwargs["provider"] = provider_a
+            if model_a:
+                config_kwargs["model"] = model_a
+            llm_config = LLMConfig(**config_kwargs)
+            llm_client = LLMClient(config=llm_config)
+            agent = ExtractionAgent(llm_client=llm_client)
+
         summary_rows = []
         detailed_reports = []
 
@@ -148,8 +175,39 @@ def main():
             try:
                 pdf_path = fetcher.fetch_for_model(model_id)
                 manuscript = PDFParser.parse(pdf_path)
-                extracted = agent.process_manuscript(manuscript)
-                audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=args.audit_ground_truth)
+
+                if is_dual:
+                    extracted_a, extracted_b = coordinator.extract_manuscript_parallel(manuscript)
+                    audit_report = auditor.audit_consensus(
+                        extracted_a,
+                        extracted_b,
+                        manuscript=manuscript,
+                        benchmark_mode=args.audit_ground_truth,
+                    )
+                    reconciled_scores = []
+                    for cs in audit_report.consensus_scores:
+                        if cs.resolved_score is not None:
+                            reconciled_scores.append(
+                                RawExtractedScore(
+                                    dataset_name=cs.canonical_dataset_name,
+                                    organ_or_task=cs.organ_or_task or "Overall",
+                                    dice_score=cs.resolved_score,
+                                    prompt_type=cs.prompt_type,
+                                    table_or_section_ref=cs.table_ref_a or cs.table_ref_b,
+                                )
+                            )
+                    extracted = ExtractedPaperData(
+                        paper_title=extracted_a.paper_title,
+                        proposed_model_id=audit_report.consensus_metadata.resolved_model_id,
+                        visual_backbone=audit_report.consensus_metadata.resolved_visual_backbone,
+                        millions_of_parameters=audit_report.consensus_metadata.resolved_params_m,
+                        code_repository_url=audit_report.consensus_metadata.code_repository_url,
+                        screening=extracted_a.screening,
+                        extracted_scores=reconciled_scores,
+                    )
+                else:
+                    extracted = agent.process_manuscript(manuscript)
+                    audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=args.audit_ground_truth)
 
                 # Delegation Layer: GitHub Repository Inspector
                 repo_recovered = False
@@ -194,11 +252,17 @@ def main():
                 })
 
                 audit_notes = []
-                if audit_report.discrepancies:
+                if hasattr(audit_report, "consensus_scores"):
+                    audit_notes.append(f"concordance: {audit_report.concordant_count}/{audit_report.total_unique_benchmarks}")
+                    if audit_report.dispute_count > 0:
+                        audit_notes.append(f"disputes: {audit_report.dispute_count}")
+                    if audit_report.inter_model_dice_mae is not None:
+                        audit_notes.append(f"inter-model MAE: {audit_report.inter_model_dice_mae:.4f}")
+                if getattr(audit_report, "discrepancies", None):
                     audit_notes.append(f"{len(audit_report.discrepancies)} survey typo/discrepancies")
-                if audit_report.outliers:
+                if getattr(audit_report, "outliers", None):
                     audit_notes.append(f"{len(audit_report.outliers)} outliers")
-                if audit_report.data_diagnosis.value != "none":
+                if getattr(audit_report, "data_diagnosis", None) and audit_report.data_diagnosis.value != "none":
                     audit_notes.append(f"diagnosis: {audit_report.data_diagnosis.value}")
                 notes_str = f" — Audit: [{', '.join(audit_notes)}]" if audit_notes else ""
 
@@ -245,7 +309,9 @@ def main():
             "# Batch Extraction Benchmark Report",
             "",
             f"- **Execution Date**: `{start_time_iso}`",
-            f"- **LLM Provider**: `{args.provider or 'gemini'}` (`{args.model or 'gemini-3.5-flash-lite'}`)",
+            f"- **Pipeline Mode**: `{'Dual-Agent Parallel Consensus' if is_dual else 'Single-Agent Extraction'}`",
+            f"- **Agent A**: `{provider_a}` (`{model_a}`)",
+            f"- **Agent B**: `{(provider_b + ' (' + model_b + ')') if is_dual else 'N/A'}`",
             f"- **Auditor Mode**: `{auditor_mode_desc}`",
             f"- **Evaluation Baseline**: `{args.compare_source.upper()}` Survey Ground Truth",
             f"- **Total Papers Evaluated**: {len(target_model_ids)}",
@@ -264,8 +330,11 @@ def main():
         json_results = {
             "metadata": {
                 "timestamp": start_time_iso,
-                "provider": args.provider or "gemini",
-                "model": args.model or "gemini-3.5-flash-lite",
+                "is_dual_mode": is_dual,
+                "provider_a": provider_a,
+                "model_a": model_a,
+                "provider_b": provider_b if is_dual else None,
+                "model_b": model_b if is_dual else None,
                 "auditor_mode": auditor_mode_desc,
                 "compare_source": args.compare_source,
                 "total_papers": len(target_model_ids),

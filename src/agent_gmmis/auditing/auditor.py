@@ -1,11 +1,16 @@
 """AuditorAgent ('Il Vigile'): Autonomous critic and quality assurance engine."""
 
 import re
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from agent_gmmis.auditing.schemas import (
     AuditAnomaly,
     AuditReport,
     AuditStatus,
+    ConsensusAuditReport,
+    ConsensusMetadata,
+    ConsensusScore,
+    ConsensusScreening,
+    ConsensusStatus,
     DiscrepancyNotice,
     MissingDataDiagnosis,
     OutlierDetectionResult,
@@ -597,6 +602,408 @@ class AuditorAgent:
             outliers=outliers,
             discrepancies=discrepancies,
             data_diagnosis=data_diagnosis,
+            confidence_score=confidence,
+            summary="\n".join(summary_lines),
+        )
+
+    def audit_consensus(
+        self,
+        extracted_a: ExtractedPaperData,
+        extracted_b: ExtractedPaperData,
+        manuscript: Optional[ParsedManuscript] = None,
+        benchmark_mode: bool = False,
+        tolerance: float = 0.01,
+    ) -> ConsensusAuditReport:
+        """
+        Performs dual-agent consensus auditing and epistemic arbitration across two independent extractions.
+
+        Args:
+            extracted_a: ExtractedPaperData from Agent A.
+            extracted_b: ExtractedPaperData from Agent B.
+            manuscript: Optional ParsedManuscript for table/figure diagnosis.
+            benchmark_mode: If True, cross-checks against human ground truth in SQLite.
+            tolerance: Maximum absolute Dice discrepancy considered CONCORDANT (default: 0.01 = 1% DSC).
+
+        Returns:
+            ConsensusAuditReport with inter-annotator agreement metrics and certified status.
+        """
+        # 1. Audit both extractions individually
+        report_a = self.audit(extracted_a, manuscript=manuscript, benchmark_mode=benchmark_mode)
+        report_b = self.audit(extracted_b, manuscript=manuscript, benchmark_mode=benchmark_mode)
+
+        # 2. Reconcile Inclusion Screening
+        sc_a = extracted_a.screening
+        sc_b = extracted_b.screening
+
+        screening_disagreements: List[str] = []
+        if sc_a.is_3d != sc_b.is_3d:
+            screening_disagreements.append(f"is_3d (A={sc_a.is_3d}, B={sc_b.is_3d})")
+        if sc_a.is_radiological != sc_b.is_radiological:
+            screening_disagreements.append(f"is_radiological (A={sc_a.is_radiological}, B={sc_b.is_radiological})")
+        if sc_a.is_public_dataset != sc_b.is_public_dataset:
+            screening_disagreements.append(f"is_public_dataset (A={sc_a.is_public_dataset}, B={sc_b.is_public_dataset})")
+        if sc_a.has_dice_metric != sc_b.has_dice_metric:
+            screening_disagreements.append(f"has_dice_metric (A={sc_a.has_dice_metric}, B={sc_b.has_dice_metric})")
+
+        if not screening_disagreements:
+            screening_status = ConsensusStatus.CONCORDANT
+            is_included = report_a.passed_inclusion_screening and report_b.passed_inclusion_screening
+            screening_notes = "Complete consensus on all inclusion screening criteria."
+        else:
+            screening_status = ConsensusStatus.DISPUTED
+            is_included = report_a.passed_inclusion_screening or report_b.passed_inclusion_screening
+            screening_notes = f"Dispute on screening criteria: {', '.join(screening_disagreements)}."
+
+        consensus_screening = ConsensusScreening(
+            status=screening_status,
+            is_included=is_included,
+            is_3d_a=sc_a.is_3d,
+            is_3d_b=sc_b.is_3d,
+            is_radiological_a=sc_a.is_radiological,
+            is_radiological_b=sc_b.is_radiological,
+            is_public_a=sc_a.is_public_dataset,
+            is_public_b=sc_b.is_public_dataset,
+            has_dice_a=sc_a.has_dice_metric,
+            has_dice_b=sc_b.has_dice_metric,
+            notes=screening_notes,
+        )
+
+        # 3. Reconcile Model Metadata & Parameters
+        id_a = (extracted_a.proposed_model_id or "").strip()
+        id_b = (extracted_b.proposed_model_id or "").strip()
+
+        norm_a = re.sub(r"[^a-z0-9]", "", id_a.lower())
+        norm_b = re.sub(r"[^a-z0-9]", "", id_b.lower())
+
+        if norm_a == norm_b:
+            model_id_status = ConsensusStatus.CONCORDANT
+            resolved_model_id = id_a
+        elif norm_a in norm_b or norm_b in norm_a:
+            model_id_status = ConsensusStatus.CONCORDANT
+            resolved_model_id = id_a if len(id_a) >= len(id_b) else id_b
+        else:
+            model_id_status = ConsensusStatus.DISPUTED
+            if self._is_model_name_compatible_with_paper(id_a, extracted_a.paper_title, manuscript):
+                resolved_model_id = id_a
+            elif self._is_model_name_compatible_with_paper(id_b, extracted_b.paper_title, manuscript):
+                resolved_model_id = id_b
+            else:
+                resolved_model_id = f"{id_a} / {id_b}"
+
+        params_a = extracted_a.millions_of_parameters
+        params_b = extracted_b.millions_of_parameters
+        if params_a is not None and params_b is not None:
+            max_p = max(params_a, params_b)
+            p_diff = abs(params_a - params_b) / max_p if max_p > 0 else 0.0
+            if p_diff <= 0.05:
+                params_status = ConsensusStatus.CONCORDANT
+                resolved_params_m = round((params_a + params_b) / 2.0, 1)
+            else:
+                params_status = ConsensusStatus.DISPUTED
+                resolved_params_m = None
+        elif params_a is not None or params_b is not None:
+            params_status = ConsensusStatus.SINGLE_AGENT_UNCONFIRMED
+            resolved_params_m = params_a if params_a is not None else params_b
+        else:
+            params_status = ConsensusStatus.CONCORDANT
+            resolved_params_m = None
+
+        resolved_backbone = extracted_a.visual_backbone or extracted_b.visual_backbone
+        resolved_repo_url = extracted_a.code_repository_url or extracted_b.code_repository_url
+
+        metadata_notes = []
+        if model_id_status == ConsensusStatus.DISPUTED:
+            metadata_notes.append(f"Model ID dispute: '{id_a}' vs '{id_b}'")
+        if params_status == ConsensusStatus.DISPUTED:
+            metadata_notes.append(f"Parameter count dispute: {params_a}M vs {params_b}M")
+
+        consensus_metadata = ConsensusMetadata(
+            model_id_status=model_id_status,
+            resolved_model_id=resolved_model_id,
+            model_id_a=id_a,
+            model_id_b=id_b,
+            params_status=params_status,
+            resolved_params_m=resolved_params_m,
+            params_m_a=params_a,
+            params_m_b=params_b,
+            visual_backbone_a=extracted_a.visual_backbone,
+            visual_backbone_b=extracted_b.visual_backbone,
+            resolved_visual_backbone=resolved_backbone,
+            code_repository_url=resolved_repo_url,
+            notes="; ".join(metadata_notes) if metadata_notes else None,
+        )
+
+        # 4. Reconcile Benchmark Scores (Semantic Alignment via DatasetAliasResolver)
+        scores_a_by_canon: Dict[str, List[RawExtractedScore]] = {}
+        for s in extracted_a.extracted_scores:
+            if not s.is_baseline_comparison:
+                canon = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name.strip()
+                scores_a_by_canon.setdefault(canon.lower(), []).append(s)
+
+        scores_b_by_canon: Dict[str, List[RawExtractedScore]] = {}
+        for s in extracted_b.extracted_scores:
+            if not s.is_baseline_comparison:
+                canon = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name.strip()
+                scores_b_by_canon.setdefault(canon.lower(), []).append(s)
+
+        all_canon_keys = sorted(list(set(scores_a_by_canon.keys()) | set(scores_b_by_canon.keys())))
+
+        consensus_scores: List[ConsensusScore] = []
+        for canon_k in all_canon_keys:
+            list_a = scores_a_by_canon.get(canon_k, [])
+            list_b = scores_b_by_canon.get(canon_k, [])
+
+            if list_a and not list_b:
+                for s_a in list_a:
+                    consensus_scores.append(
+                        ConsensusScore(
+                            dataset_name=s_a.dataset_name,
+                            canonical_dataset_name=self.alias_resolver.resolve(s_a.dataset_name) or s_a.dataset_name,
+                            organ_or_task=s_a.organ_or_task,
+                            status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
+                            score_a=s_a.dice_score,
+                            score_b=None,
+                            resolved_score=s_a.dice_score,
+                            delta=None,
+                            table_ref_a=s_a.table_or_section_ref,
+                            prompt_type=s_a.prompt_type,
+                            notes="Extracted only by Agent A",
+                        )
+                    )
+                continue
+
+            if list_b and not list_a:
+                for s_b in list_b:
+                    consensus_scores.append(
+                        ConsensusScore(
+                            dataset_name=s_b.dataset_name,
+                            canonical_dataset_name=self.alias_resolver.resolve(s_b.dataset_name) or s_b.dataset_name,
+                            organ_or_task=s_b.organ_or_task,
+                            status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
+                            score_a=None,
+                            score_b=s_b.dice_score,
+                            resolved_score=s_b.dice_score,
+                            delta=None,
+                            table_ref_b=s_b.table_or_section_ref,
+                            prompt_type=s_b.prompt_type,
+                            notes="Extracted only by Agent B",
+                        )
+                    )
+                continue
+
+            # Present in both -> match individual score rows
+            matched_b_indices: Set[int] = set()
+            for s_a in list_a:
+                canon_name = self.alias_resolver.resolve(s_a.dataset_name) or s_a.dataset_name
+                organ_a_norm = (s_a.organ_or_task or "").strip().lower()
+                prompt_a_norm = (s_a.prompt_type or "").strip().lower()
+
+                best_match_idx = None
+                best_match_score = -1
+
+                for idx, s_b in enumerate(list_b):
+                    if idx in matched_b_indices:
+                        continue
+                    organ_b_norm = (s_b.organ_or_task or "").strip().lower()
+                    prompt_b_norm = (s_b.prompt_type or "").strip().lower()
+
+                    match_pts = 0
+                    if organ_a_norm == organ_b_norm or (not organ_a_norm and not organ_b_norm):
+                        match_pts += 3
+                    elif organ_a_norm in organ_b_norm or organ_b_norm in organ_a_norm:
+                        match_pts += 2
+
+                    if prompt_a_norm == prompt_b_norm:
+                        match_pts += 2
+
+                    if len(list_b) == 1 and len(list_a) == 1:
+                        match_pts += 1
+
+                    if match_pts > best_match_score:
+                        best_match_score = match_pts
+                        best_match_idx = idx
+
+                if best_match_idx is not None and (best_match_score > 0 or len(list_b) == 1):
+                    matched_b_indices.add(best_match_idx)
+                    s_b = list_b[best_match_idx]
+
+                    val_a = s_a.dice_score
+                    val_b = s_b.dice_score
+
+                    if val_a is not None and val_b is not None:
+                        delta = abs(round(val_a - val_b, 4))
+                        if delta <= tolerance:
+                            status = ConsensusStatus.CONCORDANT
+                            resolved_val = round((val_a + val_b) / 2.0, 4)
+                            notes = f"Concordant agreement (|A - B| = {delta:.4f} <= {tolerance:.4f})"
+                        else:
+                            status = ConsensusStatus.DISPUTED
+                            resolved_val = None
+                            notes = f"DISPUTED: Agent A reported {val_a:.4f}, Agent B reported {val_b:.4f} (diff = {delta:+.4f} > {tolerance:.4f})"
+                    elif val_a is None and val_b is None:
+                        delta = 0.0
+                        status = ConsensusStatus.CONCORDANT
+                        resolved_val = None
+                        notes = "Both models identified qualitative mention without scalar Dice score."
+                    else:
+                        delta = None
+                        status = ConsensusStatus.DISPUTED
+                        resolved_val = None
+                        notes = f"DISPUTED: One agent extracted scalar value ({val_a if val_a is not None else val_b}), other did not."
+
+                    consensus_scores.append(
+                        ConsensusScore(
+                            dataset_name=s_a.dataset_name,
+                            canonical_dataset_name=canon_name,
+                            organ_or_task=s_a.organ_or_task or s_b.organ_or_task,
+                            status=status,
+                            score_a=val_a,
+                            score_b=val_b,
+                            resolved_score=resolved_val,
+                            delta=delta,
+                            table_ref_a=s_a.table_or_section_ref,
+                            table_ref_b=s_b.table_or_section_ref,
+                            prompt_type=s_a.prompt_type or s_b.prompt_type,
+                            notes=notes,
+                        )
+                    )
+                else:
+                    consensus_scores.append(
+                        ConsensusScore(
+                            dataset_name=s_a.dataset_name,
+                            canonical_dataset_name=canon_name,
+                            organ_or_task=s_a.organ_or_task,
+                            status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
+                            score_a=s_a.dice_score,
+                            score_b=None,
+                            resolved_score=s_a.dice_score,
+                            delta=None,
+                            table_ref_a=s_a.table_or_section_ref,
+                            prompt_type=s_a.prompt_type,
+                            notes="Extracted only by Agent A",
+                        )
+                    )
+
+            for idx, s_b in enumerate(list_b):
+                if idx not in matched_b_indices:
+                    canon_name = self.alias_resolver.resolve(s_b.dataset_name) or s_b.dataset_name
+                    consensus_scores.append(
+                        ConsensusScore(
+                            dataset_name=s_b.dataset_name,
+                            canonical_dataset_name=canon_name,
+                            organ_or_task=s_b.organ_or_task,
+                            status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
+                            score_a=None,
+                            score_b=s_b.dice_score,
+                            resolved_score=s_b.dice_score,
+                            delta=None,
+                            table_ref_b=s_b.table_or_section_ref,
+                            prompt_type=s_b.prompt_type,
+                            notes="Extracted only by Agent B",
+                        )
+                    )
+
+        # 5. Compute Inter-Annotator Agreement (IAA) Metrics
+        paired_scores = [cs for cs in consensus_scores if cs.score_a is not None and cs.score_b is not None]
+        deltas = [cs.delta for cs in paired_scores if cs.delta is not None]
+        inter_model_dice_mae = round(sum(deltas) / len(deltas), 4) if deltas else None
+
+        concordant_count = len([cs for cs in consensus_scores if cs.status == ConsensusStatus.CONCORDANT])
+        dispute_count = len([cs for cs in consensus_scores if cs.status == ConsensusStatus.DISPUTED])
+        unconfirmed_count = len([cs for cs in consensus_scores if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED])
+        total_unique_benchmarks = len(consensus_scores)
+
+        concordance_rate = (
+            round(concordant_count / len(paired_scores), 4)
+            if paired_scores
+            else (1.0 if (not dispute_count and concordant_count > 0) else 0.0)
+        )
+
+        # 6. Overall Certification Status & Confidence Score
+        has_critical_anomaly = any(a.severity == "critical" for a in (report_a.anomalies + report_b.anomalies))
+        has_repo_inspection = (
+            report_a.status == AuditStatus.NEEDS_REPO_INSPECTION or report_b.status == AuditStatus.NEEDS_REPO_INSPECTION
+        )
+        has_outreach = (
+            report_a.status == AuditStatus.NEEDS_OUTREACH or report_b.status == AuditStatus.NEEDS_OUTREACH
+        )
+
+        if not consensus_screening.is_included or has_critical_anomaly:
+            final_status = AuditStatus.REJECTED
+        elif has_repo_inspection and total_unique_benchmarks == 0:
+            final_status = AuditStatus.NEEDS_REPO_INSPECTION
+        elif has_outreach and total_unique_benchmarks == 0:
+            final_status = AuditStatus.NEEDS_OUTREACH
+        elif (
+            dispute_count > 0
+            or consensus_screening.status == ConsensusStatus.DISPUTED
+            or consensus_metadata.model_id_status == ConsensusStatus.DISPUTED
+        ):
+            final_status = AuditStatus.FLAGGED_WARNING
+        elif report_a.status == AuditStatus.VERIFIED and report_b.status == AuditStatus.VERIFIED and dispute_count == 0:
+            final_status = AuditStatus.VERIFIED
+        elif len(report_a.anomalies) > 0 or len(report_b.anomalies) > 0 or len(report_a.outliers) > 0 or len(report_b.outliers) > 0:
+            final_status = AuditStatus.FLAGGED_WARNING
+        else:
+            final_status = AuditStatus.VERIFIED
+
+        # Confidence calculation
+        avg_base_conf = (report_a.confidence_score + report_b.confidence_score) / 2.0
+        confidence = avg_base_conf
+
+        # Boost for concordance: multi-model agreement gives strong confidence boost
+        if concordant_count > 0 and dispute_count == 0:
+            confidence += min(0.20, concordant_count * 0.03)
+
+        # Penalties for disputes and unconfirmed singletons
+        if dispute_count > 0:
+            confidence -= dispute_count * 0.15
+        if unconfirmed_count > 0:
+            confidence -= min(0.10, unconfirmed_count * 0.02)
+        if consensus_screening.status == ConsensusStatus.DISPUTED:
+            confidence -= 0.15
+        if consensus_metadata.model_id_status == ConsensusStatus.DISPUTED:
+            confidence -= 0.10
+
+        if final_status == AuditStatus.REJECTED:
+            confidence = min(confidence, 0.40)
+            if not consensus_screening.is_included:
+                confidence = 0.0
+
+        confidence = max(0.0, min(1.0, round(confidence, 2)))
+
+        # 7. Formulate Comprehensive Summary
+        summary_lines = [
+            f"=== Dual-Agent Consensus Audit Certificate: {resolved_model_id} ===",
+            f"Overall Status: {final_status.value.upper()}",
+            f"Screening Consensus: {consensus_screening.status.value.upper()} (Included={consensus_screening.is_included})",
+            f"Metadata Consensus: Model ID={consensus_metadata.model_id_status.value.upper()}, Params={consensus_metadata.params_status.value.upper()}",
+            f"Inter-Model Dice MAE: {f'{inter_model_dice_mae:.4f}' if inter_model_dice_mae is not None else 'N/A'}",
+            f"Concordance Rate: {concordance_rate * 100:.1f}% ({concordant_count} concordant, {dispute_count} disputed, {unconfirmed_count} unconfirmed / {total_unique_benchmarks} total)",
+            f"Certified Confidence: {confidence * 100:.0f}% (Agent A={report_a.confidence_score * 100:.0f}%, Agent B={report_b.confidence_score * 100:.0f}%)",
+        ]
+
+        if dispute_count > 0:
+            disputed_items = [cs for cs in consensus_scores if cs.status == ConsensusStatus.DISPUTED]
+            summary_lines.append(f"Disputes ({len(disputed_items)}): " + "; ".join(f"{d.canonical_dataset_name} ({d.notes})" for d in disputed_items))
+
+        if unconfirmed_count > 0:
+            summary_lines.append(f"Unconfirmed Singletons: {unconfirmed_count} benchmarks verified by only one agent.")
+
+        return ConsensusAuditReport(
+            model_id=resolved_model_id,
+            status=final_status,
+            consensus_scores=consensus_scores,
+            consensus_screening=consensus_screening,
+            consensus_metadata=consensus_metadata,
+            inter_model_dice_mae=inter_model_dice_mae,
+            concordance_rate=concordance_rate,
+            concordant_count=concordant_count,
+            dispute_count=dispute_count,
+            unconfirmed_count=unconfirmed_count,
+            total_unique_benchmarks=total_unique_benchmarks,
+            audit_report_a=report_a,
+            audit_report_b=report_b,
             confidence_score=confidence,
             summary="\n".join(summary_lines),
         )
