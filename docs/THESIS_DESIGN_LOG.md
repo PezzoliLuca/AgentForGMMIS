@@ -377,3 +377,53 @@ Keep these points in mind when drafting chapters of the final dissertation:
       - Quantitative proof that concordant records correlate with near-zero error against human ground truth.
     * **Defense Impact**: Elevates the thesis contribution from single-agent automation to a formal consensus-driven epistemological verification system, offering a principled framework for automated multi-model scientific curation.
 
+---
+
+### 26. Scholarly Communication & Delegation Layer: Automated Author Inquiry (`OutreachAgent`)
+* **Problem**: In scientific literature, a non-trivial fraction of papers report evaluation metrics exclusively through graphical visualizations (e.g. radar plots, bar charts, boxplots, or violin plots) without presenting scalar numerical values in tabular form (e.g., *BiomedParse*, *Merlin*). When public code repositories also lack evaluation logs, an autonomous system faces an epistemic dead-end: attempting to OCR pixel coordinates from compressed raster charts introduces severe measurement errors ($\Delta \text{Dice} > 0.03$), violating curation fidelity.
+* **Literature Grounding**: In the reference systematic review by Moglia et al., the human curators handled this exact boundary condition through direct academic correspondence:
+  > *"In cases where the Dice score was only available in graphical form without explicit numerical values, we contacted the corresponding authors."*
+* **Design Pattern (Delegation Layer - Human-in-the-Loop Outreach)**:
+  Rather than hallucinating numbers or silently discarding eligible models, the Auditor diagnoses `AuditStatus.NEEDS_OUTREACH` (`MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND`) and delegates to `OutreachAgent`:
+  ```
+                     ┌────────────────────────────────┐
+                     │   Auditor ("Il Vigile")        │
+                     │   Status: NEEDS_OUTREACH       │
+                     └───────────────┬────────────────┘
+                                     │
+                                     ▼
+                     ┌────────────────────────────────┐
+                     │         OutreachAgent          │
+                     │  1. Extract Corresponding Auth │
+                     │  2. Identify Missing Figures   │
+                     │  3. Compose Formal Inquiry     │
+                     └───────────────┬────────────────┘
+                                     │
+                                     ▼
+                     ┌────────────────────────────────┐
+                     │     Persisted Email Draft      │
+                     │   (.json + .md in data/drafts) │
+                     └───────────────┬────────────────┘
+                                     │
+                                     ▼ (Human Reviewer)
+                     ┌────────────────────────────────┐
+                     │   Human-in-the-Loop Dispatch   │
+                     │   & Scholarly Communication    │
+                     └────────────────────────────────┘
+  ```
+* **Hierarchical Metadata Extraction Engine**:
+  Extracts contact information without relying on fragile external web scrapers:
+  1. *Footnote & Asterisk Matching*: Identifies corresponding author asterisks (`*`, `✉`, `†`) and explicit footnote blocks (`*Corresponding author(s). E-mail(s): ...`).
+  2. *Inline Layout Parsing*: Supports conference/arXiv formats (e.g. CVPR, NeurIPS) where institutional affiliation and email are placed directly adjacent to the author's name.
+  3. *Email-to-Author Alignment*: Matches username tokens (`bowang`, `vbutoi`) against candidate capitalized names in the front matter.
+* **Scholarly Inquiry Protocol & Tone**:
+  Constructs a formal, polite academic inquiry email adhering to international scientific correspondence standards:
+  - Subject: `[Academic Inquiry] Quantitative evaluation metrics for "[Paper Title]" ([Model ID])`
+  - Affiliation: Identifies the research context under the Generalist Medical 3D Segmentation (GMMIS) benchmark at Politecnico di Milano (DEIB).
+  - Explicit Figure Citations: References the exact figures (e.g. `Figure 3`, `Figure 4`) and target benchmarks (e.g. `BraTS`, `AMOS`) depicted graphically.
+  - Open Science Rationale: Explains that exact scalar metrics ensure their model is represented accurately in the public benchmark without coordinate approximations.
+* **Ethical Governance & Human-in-the-Loop (HITL)**:
+  Fully automated outbound emailing without human oversight risks spamming researchers or sending misdirected inquiries. Therefore, `OutreachAgent` generates and persists both machine-readable JSON (`OutreachDraft`) and formatted Markdown drafts (`.md`), tracking status (`DRAFT_PENDING_REVIEW` $\rightarrow$ `APPROVED` $\rightarrow$ `DISPATCHED` $\rightarrow$ `REPLIED`). The system empowers human researchers to review, edit, and dispatch inquiries with one click.
+* **Defense Impact**: Demonstrates that the autonomous system respects real-world scientific boundaries, mirrors established human methodological practices, and enforces responsible AI governance.
+
+

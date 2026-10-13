@@ -634,6 +634,41 @@ Execute empirical validation of the triadic consensus pipeline across **20 scien
   5. **Kimi (Moonshot AI)**: `moonshotai/Moonlight-16B-A3B-Instruct` (~15 GB MoE, 3B active) — ⏳ *Queued*
 * **Cluster Storage**: 181 GB free on `/home` mount; estimated total weight footprint ~48 GB.
 
+---
+
+## STEP 17 — Implementation & Verification of OutreachAgent (Scholarly Inquiry Delegation Layer)
+
+### 1. Goal
+Implement Phase 3.2 Part 2: the **`OutreachAgent`**, closing the delegation loop of "Il Vigile" (`AuditorAgent`) when papers report quantitative benchmarks only in graphical form (radar charts, boxplots, bar charts) without numerical tables or accessible code repositories. The agent operationalizes the human survey methodology of Moglia et al. by automatically extracting corresponding author contact details, identifying missing figures/datasets, and composing formal academic inquiry emails for Human-in-the-Loop review.
+
+### 2. Implementation Architecture
+* **Schemas** ([`src/agent_gmmis/auditing/schemas.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/schemas.py)):
+  - `AuthorContactInfo`: Structured model capturing `name`, `email`, `affiliation`, `is_corresponding`, and extraction `confidence`.
+  - `OutreachStatus`: Lifecycle enum (`DRAFT_PENDING_REVIEW`, `APPROVED`, `DISPATCHED`, `REPLIED`).
+  - `OutreachDraft`: Complete draft record containing `model_id`, `paper_title`, `recipient`, `target_datasets`, `target_figures`, `email_subject`, `email_body`, `created_at`, `status`, and `draft_filepath`.
+* **Outreach Agent** ([`src/agent_gmmis/auditing/outreach.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/outreach.py)):
+  - `extract_contact_info()`: Robust hierarchical heuristics parsing Page 1 front matter (handling both Nature/Springer explicit footnotes with asterisks and conference/arXiv inline affiliation/email blocks).
+  - `identify_missing_targets()`: Scans extraction scores with `dice_score is None` and cross-references manuscript captions for figure citations depicting evaluations.
+  - `compose_email()`: Generates polite, formal academic inquiry emails in English citing Politecnico di Milano DEIB, introducing the open-access GMMIS benchmark initiative, referencing specific figures, and requesting scalar Dice scores.
+  - `save_draft()`: Persists dual output artifacts to `data/outreach_drafts/`:
+    - `.json`: Machine-readable metadata for automated queueing.
+    - `.md`: Human-reviewable formatted document with email subject and body ready to inspect and send.
+  - `handle_audit_report()`: Triages incoming `AuditReport` or `ConsensusAuditReport`; automatically generates and saves drafts when `status == AuditStatus.NEEDS_OUTREACH`.
+
+### 3. Empirical Verification & Test Suite
+* **Unit Testing**: Executed `.venv/bin/pytest tests/test_outreach.py -v`
+  * Added 8 dedicated unit tests in [`tests/test_outreach.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_outreach.py):
+    1. Footnote & asterisk contact extraction (MedSAM format: `Bo Wang`, `bowang@vectorinstitute.ai`).
+    2. Inline author-affiliation contact extraction (UniverSeg format: `Victor Ion Butoi`, `vbutoi@mit.edu`, `MIT CSAIL`).
+    3. Graceful fallback on missing emails with reduced confidence score.
+    4. Target dataset and figure reference extraction from null scores and captions.
+    5. English academic email formatting with Politecnico di Milano DEIB attribution.
+    6. Dual JSON & Markdown draft persistence and Pydantic deserialization validation.
+    7. Automated triage upon receiving `AuditStatus.NEEDS_OUTREACH`.
+    8. Graceful bypass when reports are certified `AuditStatus.VERIFIED`.
+  * **Result**: All 8 tests passing. Full suite **57/57 unit tests green in 0.41s**.
+
+
 
 
 

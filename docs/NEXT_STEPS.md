@@ -3,7 +3,7 @@
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
 > **Last Updated**: `2026-10-13`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine)**, **Phase 3.2 Part 1 (`RepoInspector`)**, and **30-Paper Cross-Architecture Empirical Benchmark** Completed & Validated. Current Priority: **Phase 3.2 Part 2 (`OutreachAgent`)**, followed by **Phase 3.3 (`DatabaseAgent` / Curator)**.
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine)**, **Phase 3.2 Parts 1 & 2 (`RepoInspector` & `OutreachAgent`)**, and **30-Paper Cross-Architecture Empirical Benchmark** Completed & Validated. Current Priority: **Phase 3.3 (`DatabaseAgent` / Curator)**.
 
 ---
 
@@ -119,13 +119,24 @@ With the single-agent Critic (`AuditorAgent`) and `RepoInspector` operational, S
 * **Test Verification**:
   * 8 dedicated unit tests in `tests/test_consensus_auditing.py` (49/49 total test suite passing in 0.40s).
 
-#### 4. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`) — **NEXT ACTION**
-* Direct operationalization of Moglia et al. methodology (*"In cases where the Dice score was only available in graphical form without explicit numerical values, we contacted the corresponding authors"*).
-* Automatically extracts corresponding author name, email, and institution from manuscript header.
-* Drafts a formal, polite academic inquiry email in English requesting numerical values for the specific benchmark figures.
-* Saves email draft for human-in-the-loop review before dispatch.
+#### 4. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`) — **COMPLETED & VALIDATED**
+* **Methodological Foundation**:
+  * Direct operationalization of Moglia et al. (*"In cases where the Dice score was only available in graphical form without explicit numerical values, we contacted the corresponding authors"*).
+* **Metadata & Contact Extraction**:
+  * Hierarchical extraction of corresponding author name, email, and affiliation from front matter (supporting both Nature/Springer footnote asterisks and conference/arXiv inline headers).
+  * Graceful fallback when emails are absent, assigning confidence metrics.
+* **Target & Figure Triage**:
+  * Automatically isolates benchmark datasets lacking scalar values (`dice_score is None`) and captions featuring visual charts (bar plots, boxplots, radar charts).
+* **Formal Scholarly Inquiry Drafting**:
+  * Generates professional, polite academic correspondence in English citing Politecnico di Milano DEIB, introducing the open-access GMMIS benchmark initiative, referencing specific figures, and requesting scalar Dice scores.
+* **Human-in-the-Loop Governance & Multi-Format Storage**:
+  * Automatically persists drafts to `data/outreach_drafts/` in both machine-readable JSON (`OutreachDraft` schema) and human-readable Markdown (`.md`) ready for manual review before dispatch.
+* **Auditor Integration**:
+  * `handle_audit_report()` automatically triages `AuditStatus.NEEDS_OUTREACH` and `MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND`.
+* **Test Verification**:
+  * 8 dedicated unit tests in `tests/test_outreach.py` (57/57 total test suite passing in 0.41s).
 
-#### 5. Implement `DatabaseAgent` (Curator Engine) (`src/agent_gmmis/curation/curator.py`)
+#### 5. Implement `DatabaseAgent` (Curator Engine) (`src/agent_gmmis/curation/curator.py`) — **NEXT ACTION**
 * **Entity Resolution & Deduplication**:
   * Check if model already exists (via exact ID, arXiv ID, or title similarity) before insertion.
   * Resolve dataset synonyms using `DatasetAliasResolver`.
