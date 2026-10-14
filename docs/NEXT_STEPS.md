@@ -2,8 +2,8 @@
 
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
-> **Last Updated**: `2026-10-13`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine)**, **Phase 3.2 Parts 1 & 2 (`RepoInspector` & `OutreachAgent`)**, and **20-Paper Local Benchmark (Gemini 3.1 Flash Lite) with Real-World Outreach Validation (`Merlin`)** Completed & Validated. Current Priority: **Phase 3.3 (`DatabaseAgent` / Curator)**.
+> **Last Updated**: `2026-10-14`  
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine Refinement)**, **Phase 3.2 Parts 1 & 2 (`RepoInspector` & `OutreachAgent`)**, and **20-Paper Mufasa HPC Dual-Agent Benchmark** Completed & Validated (60/60 tests passing). Current Priority: **Phase 3.3 (`DatabaseAgent` / Curator Engine)**.
 
 ---
 
@@ -109,15 +109,16 @@ With the single-agent Critic (`AuditorAgent`) and `RepoInspector` operational, S
   * `ConsensusStatus` enum: `CONCORDANT`, `DISPUTED`, `SINGLE_AGENT_UNCONFIRMED`.
   * `ConsensusScore`, `ConsensusScreening`, `ConsensusMetadata`, and polymorphic `ConsensusAuditReport`.
 * **Consensus Auditing in `AuditorAgent` (`audit_consensus`)**:
-  * Semantic alignment of scores using `DatasetAliasResolver`.
+  * Semantic alignment of scores using `DatasetAliasResolver` and macro-average synonym matching (`OVERALL_SYNONYMS`).
   * Tolerance threshold $\epsilon = 0.01$ (1% DSC) for `CONCORDANT` agreement.
   * Discrepancies $> \epsilon$ flagged transparently as `DISPUTED` (preserving both candidate values).
-  * Benchmarks captured by only one agent marked as `SINGLE_AGENT_UNCONFIRMED` with proportional confidence adjustments.
-  * Computes **Inter-Annotator Agreement (IAA)** metrics for thesis dissertation (Inter-Model Dice MAE, Concordance Rate %).
+  * **Disentangled Paired IAA from Coverage Granularity**: `concordance_rate` calculated strictly on paired benchmarks (`concordant_count / paired_count`), preventing single-agent coverage differences from artificially deflating agreement metrics.
+  * **Bounded & Proportional Confidence Scoring**: Replaced linear deductions with bounded dispute ratio penalties (`min(0.25, dispute_ratio * 0.25)`), protecting certified confidence for models with 0.0000 MAE.
+  * **Partition Split Disambiguation**: Enforced `data_budget_or_setting` (e.g. 10% vs 20% labeled) to prevent cross-partition false disputes in semi-supervised benchmarks.
 * **CLI Runners & Script Integration**:
   * Updated [`scripts/run_batch_benchmark.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_batch_benchmark.py) and [`scripts/run_extraction.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_extraction.py) with dual-agent support and formatted Consensus Matrix rendering.
 * **Test Verification**:
-  * 8 dedicated unit tests in `tests/test_consensus_auditing.py` (49/49 total test suite passing in 0.40s).
+  * 11 dedicated unit tests in `tests/test_consensus_auditing.py` (60/60 total test suite passing in 0.51s).
 
 #### 4. Implement `OutreachAgent` (`src/agent_gmmis/auditing/outreach.py`) — **COMPLETED & VALIDATED**
 * **Methodological Foundation**:
@@ -189,7 +190,7 @@ To resume work in the next session, run:
 # 1. Activate Virtual Environment
 source .venv/bin/activate
 
-# 2. Run Test Suite (verify baseline 57/57 tests pass)
+# 2. Run Test Suite (verify baseline 60/60 tests pass)
 .venv/bin/pytest -v
 
 # 3. Quick 3-Paper Extraction Smoke Test

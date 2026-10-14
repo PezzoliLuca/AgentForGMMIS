@@ -327,8 +327,9 @@ class AuditorAgent:
                 table_ref = (s.table_or_section_ref or "").strip().lower()
                 budget = (s.data_budget_or_setting or "").strip().lower()
 
-                # Skip semi-supervised or ablation partitions if organ text already specifies the budget
-                if any(k in organ for k in ("scarce", "label", "%", "percent", "few", "semi", "ablation", "round", "client")):
+                # Skip semi-supervised or ablation partitions if organ text or budget already specifies the partition
+                organ_and_setting = f"{organ} {prompt} {budget}"
+                if any(k in organ_and_setting for k in ("scarce", "label", "%", "percent", "few", "semi", "ablation", "round", "client", "shot", "split")):
                     continue
 
                 key = (canon_d.lower(), organ, prompt, table_ref, budget)
@@ -771,6 +772,7 @@ class AuditorAgent:
                             delta=None,
                             table_ref_a=s_a.table_or_section_ref,
                             prompt_type=s_a.prompt_type,
+                            data_budget_or_setting=s_a.data_budget_or_setting,
                             notes="Extracted only by Agent A",
                         )
                     )
@@ -790,6 +792,7 @@ class AuditorAgent:
                             delta=None,
                             table_ref_b=s_b.table_or_section_ref,
                             prompt_type=s_b.prompt_type,
+                            data_budget_or_setting=s_b.data_budget_or_setting,
                             notes="Extracted only by Agent B",
                         )
                     )
@@ -801,6 +804,7 @@ class AuditorAgent:
                 canon_name = self.alias_resolver.resolve(s_a.dataset_name) or s_a.dataset_name
                 organ_a_norm = (s_a.organ_or_task or "").strip().lower()
                 prompt_a_norm = (s_a.prompt_type or "").strip().lower()
+                budget_a_norm = (s_a.data_budget_or_setting or "").strip().lower()
 
                 best_match_idx = None
                 best_match_score = -1
@@ -810,15 +814,26 @@ class AuditorAgent:
                         continue
                     organ_b_norm = (s_b.organ_or_task or "").strip().lower()
                     prompt_b_norm = (s_b.prompt_type or "").strip().lower()
+                    budget_b_norm = (s_b.data_budget_or_setting or "").strip().lower()
 
+                    # If both explicitly specify different data budget splits (e.g. 10% vs 20%), do not match as same test
+                    if budget_a_norm and budget_b_norm and budget_a_norm != budget_b_norm:
+                        continue
+
+                    OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}
                     match_pts = 0
                     if organ_a_norm == organ_b_norm or (not organ_a_norm and not organ_b_norm):
+                        match_pts += 3
+                    elif organ_a_norm in OVERALL_SYNONYMS and organ_b_norm in OVERALL_SYNONYMS:
                         match_pts += 3
                     elif organ_a_norm in organ_b_norm or organ_b_norm in organ_a_norm:
                         match_pts += 2
 
                     if prompt_a_norm == prompt_b_norm:
                         match_pts += 2
+
+                    if budget_a_norm and budget_b_norm and budget_a_norm == budget_b_norm:
+                        match_pts += 3
 
                     if len(list_b) == 1 and len(list_a) == 1:
                         match_pts += 1
@@ -868,6 +883,7 @@ class AuditorAgent:
                             table_ref_a=s_a.table_or_section_ref,
                             table_ref_b=s_b.table_or_section_ref,
                             prompt_type=s_a.prompt_type or s_b.prompt_type,
+                            data_budget_or_setting=s_a.data_budget_or_setting or s_b.data_budget_or_setting,
                             notes=notes,
                         )
                     )
@@ -884,6 +900,7 @@ class AuditorAgent:
                             delta=None,
                             table_ref_a=s_a.table_or_section_ref,
                             prompt_type=s_a.prompt_type,
+                            data_budget_or_setting=s_a.data_budget_or_setting,
                             notes="Extracted only by Agent A",
                         )
                     )
@@ -903,6 +920,7 @@ class AuditorAgent:
                             delta=None,
                             table_ref_b=s_b.table_or_section_ref,
                             prompt_type=s_b.prompt_type,
+                            data_budget_or_setting=s_b.data_budget_or_setting,
                             notes="Extracted only by Agent B",
                         )
                     )
@@ -915,11 +933,13 @@ class AuditorAgent:
         concordant_count = len([cs for cs in consensus_scores if cs.status == ConsensusStatus.CONCORDANT])
         dispute_count = len([cs for cs in consensus_scores if cs.status == ConsensusStatus.DISPUTED])
         unconfirmed_count = len([cs for cs in consensus_scores if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED])
+        paired_count = len(paired_scores)
         total_unique_benchmarks = len(consensus_scores)
 
+        # Concordance rate is strictly calculated on common paired extractions (true Inter-Annotator Agreement)
         concordance_rate = (
-            round(concordant_count / len(paired_scores), 4)
-            if paired_scores
+            round(concordant_count / paired_count, 4)
+            if paired_count > 0
             else (1.0 if (not dispute_count and concordant_count > 0) else 0.0)
         )
 
@@ -951,7 +971,7 @@ class AuditorAgent:
         else:
             final_status = AuditStatus.VERIFIED
 
-        # Confidence calculation
+        # Confidence calculation: bounded and proportional
         avg_base_conf = (report_a.confidence_score + report_b.confidence_score) / 2.0
         confidence = avg_base_conf
 
@@ -959,11 +979,19 @@ class AuditorAgent:
         if concordant_count > 0 and dispute_count == 0:
             confidence += min(0.20, concordant_count * 0.03)
 
-        # Penalties for disputes and unconfirmed singletons
+        # Bounded and relative penalties for disputes and unconfirmed singletons
         if dispute_count > 0:
-            confidence -= dispute_count * 0.15
+            if paired_count > 0:
+                dispute_ratio = dispute_count / paired_count
+                dispute_penalty = min(0.25, round(dispute_ratio * 0.25, 2))
+            else:
+                dispute_penalty = min(0.25, round(dispute_count * 0.05, 2))
+            confidence -= dispute_penalty
+
         if unconfirmed_count > 0:
-            confidence -= min(0.10, unconfirmed_count * 0.02)
+            # Modest penalty for coverage asymmetry, capped at 0.08
+            confidence -= min(0.08, round(unconfirmed_count * 0.01, 2))
+
         if consensus_screening.status == ConsensusStatus.DISPUTED:
             confidence -= 0.15
         if consensus_metadata.model_id_status == ConsensusStatus.DISPUTED:
@@ -983,7 +1011,7 @@ class AuditorAgent:
             f"Screening Consensus: {consensus_screening.status.value.upper()} (Included={consensus_screening.is_included})",
             f"Metadata Consensus: Model ID={consensus_metadata.model_id_status.value.upper()}, Params={consensus_metadata.params_status.value.upper()}",
             f"Inter-Model Dice MAE: {f'{inter_model_dice_mae:.4f}' if inter_model_dice_mae is not None else 'N/A'}",
-            f"Concordance Rate: {concordance_rate * 100:.1f}% ({concordant_count} concordant, {dispute_count} disputed, {unconfirmed_count} unconfirmed / {total_unique_benchmarks} total)",
+            f"Concordance Rate on Paired: {concordance_rate * 100:.1f}% ({concordant_count} concordant, {dispute_count} disputed / {paired_count} paired | {unconfirmed_count} singletons of {total_unique_benchmarks} total)",
             f"Certified Confidence: {confidence * 100:.0f}% (Agent A={report_a.confidence_score * 100:.0f}%, Agent B={report_b.confidence_score * 100:.0f}%)",
         ]
 
@@ -1005,6 +1033,7 @@ class AuditorAgent:
             concordant_count=concordant_count,
             dispute_count=dispute_count,
             unconfirmed_count=unconfirmed_count,
+            paired_count=paired_count,
             total_unique_benchmarks=total_unique_benchmarks,
             audit_report_a=report_a,
             audit_report_b=report_b,

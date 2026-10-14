@@ -268,9 +268,16 @@ def main():
 
                 audit_notes = []
                 if hasattr(audit_report, "consensus_scores"):
-                    audit_notes.append(f"concordance: {audit_report.concordant_count}/{audit_report.total_unique_benchmarks}")
+                    paired_c = getattr(audit_report, "paired_count", 0)
+                    conc_c = audit_report.concordant_count
+                    if paired_c > 0:
+                        audit_notes.append(f"paired agreement: {conc_c}/{paired_c} ({audit_report.concordance_rate*100:.0f}%)")
+                    else:
+                        audit_notes.append(f"concordance: {conc_c}/{audit_report.total_unique_benchmarks}")
                     if audit_report.dispute_count > 0:
                         audit_notes.append(f"disputes: {audit_report.dispute_count}")
+                    if audit_report.unconfirmed_count > 0:
+                        audit_notes.append(f"singletons: {audit_report.unconfirmed_count}")
                     if audit_report.inter_model_dice_mae is not None:
                         audit_notes.append(f"inter-model MAE: {audit_report.inter_model_dice_mae:.4f}")
                 if getattr(audit_report, "discrepancies", None):

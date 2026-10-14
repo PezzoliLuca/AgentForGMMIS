@@ -444,5 +444,40 @@ Keep these points in mind when drafting chapters of the final dissertation:
      - Persisted artifacts to [`data/outreach_drafts/merlin_outreach.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.md) and [`data/outreach_drafts/merlin_outreach.json`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/data/outreach_drafts/merlin_outreach.json) with status `DRAFT_PENDING_REVIEW`.
 * **Scientific Rigor for Thesis Defense**: This end-to-end trace provides empirical evidence that the system never invents fake metrics when papers omit tables, seamlessly attempts code repository recovery, and gracefully initiates Human-in-the-Loop academic correspondence to obtain ground truth, reproducing the exact investigative protocol of systematic review authors.
 
+---
+
+### 28. The Granularity Asymmetry Paradox & Proportional Epistemic Arbitration in Dual-Agent Consensus
+
+* **Theoretical Core: The Granularity Asymmetry Paradox**:
+  When deploying multiple heterogeneous LLMs in parallel (e.g. `Qwen2.5-14B-Instruct-AWQ` on HPC vs `Gemini-3.1-Flash-Lite` on cloud) to independently extract complex multi-dimensional medical segmentation benchmarks, agents naturally exhibit divergent hierarchical granularities:
+  - **Macro-Aggregator Behavior** (e.g., Gemini): The agent targets compact table summaries, extracting the macro-average `Overall` or `Mean` Dice row to minimize token usage while capturing the primary survey metric.
+  - **Decompositional Behavior** (e.g., Qwen): The agent recursively unpacks the entire multi-column structure, extracting both the summary row and 15–25 fine-grained anatomical sub-structures (e.g. Spleen, R. Kidney, L. Kidney, Liver, Pancreas, Aorta).
+* **The Union vs. Intersection Fallacy in Inter-Annotator Agreement (IAA)**:
+  In standard NLP literature, agreement is often formulated over the complete pool of extracted entities:
+  $$\text{Concordance}_{\text{naive}} = \frac{|\mathcal{C}|}{|\mathcal{S}_A \cup \mathcal{S}_B|}$$
+  where $\mathcal{C}$ is the set of concordant scores and $\mathcal{S}_A, \mathcal{S}_B$ are the extraction sets of Agents A and B.
+  In the presence of granularity asymmetry, if Agent A extracts 1 summary score ($\text{DSC} = 0.8030$) and Agent B extracts that identical summary score plus 13 organ-specific sub-scores, the naive formula yields:
+  $$\text{Concordance}_{\text{naive}} = \frac{1}{1 + 13} = 7.14\%$$
+  This creates an epistemological illusion: **the models exhibit 100% agreement on their common ground, yet the naive metric declares 92.9% disagreement**. This paradox erroneously depressed confidence scores to near-zero (0%–12%) on papers where the extraction was objectively flawless ($\text{MAE} = 0.0000$).
+* **Mathematical Resolution: Disentangled Paired IAA & Singleton Preservation**:
+  To resolve this paradox, the `AuditorAgent` strictly partitions extracted claims into two orthogonal mathematical subsets:
+  1. **Paired Benchmark Set ($\mathcal{P}$)**: Benchmarks extracted by *both* agents with matching canonical dataset, prompt type, and data budget:
+     $$\mathcal{P} = \{ (s_A, s_B) \in \mathcal{S}_A \times \mathcal{S}_B \mid \text{matched}(s_A, s_B) \}$$
+  2. **Singleton Set ($\mathcal{U}$)**: Benchmarks extracted by only one agent ($\mathcal{S}_A \setminus \mathcal{P}$ and $\mathcal{S}_B \setminus \mathcal{P}$), classified as `SINGLE_AGENT_UNCONFIRMED`.
+  
+  **True Inter-Annotator Agreement** is calculated strictly on the paired intersection:
+  $$\text{Concordance Rate} = \frac{|\{ (s_A, s_B) \in \mathcal{P} \mid |s_A - s_B| \le \tau \}|}{|\mathcal{P}|} \quad (\text{for } |\mathcal{P}| > 0)$$
+  where $\tau = 0.01$ (1.0% DSC tolerance).
+  Singletons represent *coverage breadth* rather than factual contradiction; they are preserved in the consensus report with their extracted scores rather than discarded.
+* **Bounded & Proportional Epistemic Confidence**:
+  Rigid linear penalties (e.g. $-0.15 \times \text{disputes}$) induce catastrophic confidence collapse when minor table alignment ambiguities arise. The revised confidence engine couples base model confidence with a bounded, relative dispute penalty:
+  $$\Delta \text{Conf}_{\text{dispute}} = \min\left(0.25, \text{round}\left(\frac{|\mathcal{D}|}{|\mathcal{P}|} \times 0.25, 2\right)\right)$$
+  where $\mathcal{D} \subseteq \mathcal{P}$ is the set of disputed pairs ($|s_A - s_B| > \tau$). Singletons incur only a marginal, capped deduction ($\min(0.08, |\mathcal{U}| \times 0.01)$).
+* **Experimental Partition Disambiguation (Semi-Supervised & Few-Shot Regimes)**:
+  Foundation models in medical imaging frequently benchmark across semi-supervised partitions (e.g., 1%, 10%, 20%, 100% labeled slices in `KnowSAM` or `SFR SAM`). If the matching algorithm fails to respect the partition budget, a 10% partition score ($\text{DSC} = 0.6811$) is falsely paired against a 20% partition score ($\text{DSC} = 0.7269$), fabricating an artificial dispute. By explicitly encoding `data_budget_or_setting` in both the extraction schema and the matching engine:
+  $$\text{budget}_A \ne \text{budget}_B \implies \text{No Match (Separate Singletons)}$$
+  the system completely eliminates cross-partition false disputes while faithfully capturing the full multi-regime evaluation matrix.
+* **Defense Impact**: Demonstrates mathematically rigorous multi-agent consensus scoring that handles varying granularity levels, prevents false-positive dispute cascades, and grounds epistemic arbitration in clean decision theory.
+
 
 

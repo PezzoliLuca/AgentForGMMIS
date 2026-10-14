@@ -164,6 +164,7 @@ class ConsensusScore(BaseModel):
     table_ref_a: Optional[str] = None
     table_ref_b: Optional[str] = None
     prompt_type: Optional[str] = None
+    data_budget_or_setting: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -220,6 +221,7 @@ class ConsensusAuditReport(BaseModel):
     concordant_count: int = 0
     dispute_count: int = 0
     unconfirmed_count: int = 0
+    paired_count: int = 0
     total_unique_benchmarks: int = 0
     audit_report_a: AuditReport
     audit_report_b: AuditReport

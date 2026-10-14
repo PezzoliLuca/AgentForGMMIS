@@ -303,3 +303,123 @@ class TestConsensusAuditor:
         report = auditor.audit_consensus(data_a, data_b)
         assert report.status == AuditStatus.REJECTED
         assert report.confidence_score <= 0.40
+
+    def test_audit_consensus_disentangled_granularity(self, auditor):
+        """Asymmetric granularity (Agent A macro-average vs Agent B per-organ rows) maintains 100% paired concordance."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        data_a = ExtractedPaperData(
+            paper_title="Segment Anything in Medical Images",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Multi-organ mean", dice_score=0.8030),
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="Segment Anything in Medical Images",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8030),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Spleen", dice_score=0.8520),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Right Kidney", dice_score=0.8140),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", dice_score=0.9230),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+
+        assert report.paired_count == 1
+        assert report.concordant_count == 1
+        assert report.dispute_count == 0
+        assert report.unconfirmed_count == 3
+        assert report.total_unique_benchmarks == 4
+        # Inter-annotator agreement on common paired extractions is 100%
+        assert report.concordance_rate == 1.0
+        # Confidence remains high despite coverage asymmetry (only modest penalty for singletons)
+        assert report.confidence_score >= 0.85
+
+    def test_audit_consensus_bounded_dispute_penalty(self, auditor):
+        """Dispute penalties are proportional to the dispute ratio among paired benchmarks and bounded."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        # 5 paired benchmarks, 1 dispute (divergence > 0.01)
+        data_a = ExtractedPaperData(
+            paper_title="Segment Anything in Medical Images",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Spleen", dice_score=0.8500),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", dice_score=0.9200),
+                RawExtractedScore(dataset_name="BraTS", organ_or_task="Tumor", dice_score=0.7500),
+                RawExtractedScore(dataset_name="AMOS", organ_or_task="Abdomen", dice_score=0.8100),
+                RawExtractedScore(dataset_name="ACDC", organ_or_task="Heart", dice_score=0.9000),
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="Segment Anything in Medical Images",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Spleen", dice_score=0.8500),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", dice_score=0.9200),
+                RawExtractedScore(dataset_name="BraTS", organ_or_task="Tumor", dice_score=0.7500),
+                RawExtractedScore(dataset_name="AMOS", organ_or_task="Abdomen", dice_score=0.8100),
+                RawExtractedScore(dataset_name="ACDC", organ_or_task="Heart", dice_score=0.7500),  # Dispute on ACDC
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+
+        assert report.paired_count == 5
+        assert report.concordant_count == 4
+        assert report.dispute_count == 1
+        assert report.concordance_rate == 0.8
+        # Base confidence ~0.95 -> with 1/5 dispute penalty (0.05), confidence should still be ~0.90, NOT destroyed!
+        assert report.confidence_score >= 0.80
+
+    def test_audit_consensus_data_budget_split_separation(self, auditor):
+        """Semi-supervised splits (e.g. 10% vs 20% labeled) match their exact regimes and avoid false disputes."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        data_a = ExtractedPaperData(
+            paper_title="KnowSAM",
+            proposed_model_id="KnowSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="ACDC", organ_or_task="Heart", dice_score=0.6811, data_budget_or_setting="10% labeled"),
+                RawExtractedScore(dataset_name="ACDC", organ_or_task="Heart", dice_score=0.7269, data_budget_or_setting="20% labeled"),
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="KnowSAM",
+            proposed_model_id="KnowSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="ACDC", organ_or_task="Heart", dice_score=0.6811, data_budget_or_setting="10% labeled"),
+                RawExtractedScore(dataset_name="ACDC", organ_or_task="Heart", dice_score=0.7269, data_budget_or_setting="20% labeled"),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+
+        assert report.paired_count == 2
+        assert report.concordant_count == 2
+        assert report.dispute_count == 0
+        assert report.concordance_rate == 1.0

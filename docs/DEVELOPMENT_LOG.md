@@ -764,9 +764,44 @@ Execute and validate the complete **Triadic Dual-Agent Parallel Consensus Extrac
    - Log: [`logs/mufasa_dual_20/batch_benchmark_20261014_025036.log`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/mufasa_dual_20/batch_benchmark_20261014_025036.log)
    - SLURM Output: [`logs/mufasa_dual_20/mufasa_dual_bench_5101.out`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/logs/mufasa_dual_20/mufasa_dual_bench_5101.out)
 
+---
 
+## [2026-10-14] Step 20: Dual-Agent Consensus & Epistemic Arbitration Refinement (Resolving Granularity Asymmetry & Partition Collisions)
 
+### 1. Motivation & Empirical Problem
+Following the 20-paper dual-agent benchmark run on DEIB Mufasa HPC (SLURM Job 5101, comparing `Qwen2.5-14B-Instruct-AWQ` on an A100 MIG slice against `Gemini-3.1-Flash-Lite`), a critical review of the results revealed an apparent paradox:
+- Ground-truth evaluation confirmed that in **10 out of 20 papers**, Dice MAE against human literature ground truth was strictly **0.0000** (perfect extraction).
+- On clean benchmark tables (such as `SegVol`), the two models agreed on **14 out of 14 common benchmarks with an inter-model MAE of 0.0000**.
+- Yet, the audit summary reported seemingly alarming statistics: concordance ratios like `3/26` (11.5%) or `0/42` (0.0%), confidence scores dropping to 0%–12%, and nearly every paper classified under `FLAGGED_WARNING`.
 
+A forensic investigation into the raw extracted JSON data isolated three distinct systemic pathologies:
+1. **The Granularity Asymmetry Paradox (Union vs Intersection)**:
+   Qwen frequently extracted fine-grained, organ-by-organ breakdown rows (e.g. 20+ anatomical structures across BTCV/AMOS), whereas Gemini strictly prioritized the macro-average summary row (`Overall` / `Mean`). The original concordance rate was computed across the *union* of all unique benchmarks: $\text{Rate} = \frac{|\mathcal{C}|}{|\mathcal{S}_A \cup \mathcal{S}_B|}$. Consequently, 100% agreement on all 3 shared macro-benchmarks in a pool of 26 total items was penalized as `3/26 = 11.5%`, falsely conflating *coverage asymmetry* with *epistemic disagreement*.
+2. **Semi-Supervised / Few-Shot Partition Collisions**:
+   In semi-supervised medical segmentation papers (e.g. `KnowSAM`, `SFR SAM`, `FLAP-SAM`), benchmark tables present results across distinct labeled data partitions (e.g., 10% vs 20% vs 100% labeled slices). Because `data_budget_or_setting` was not enforced during score alignment, the Auditor matched a 10% partition score against a 20% partition score for the same dataset/organ, declaring 5 to 7 artificial numerical disputes.
+3. **Catastrophic Linear Dispute Penalization**:
+   The Auditor applied a rigid deduction of `-0.15` per dispute (`confidence -= dispute_count * 0.15`). For papers with 5 to 7 false partition collisions, confidence plummeted from 95% to 0%, completely overriding the empirical reality of perfect model alignment.
 
+### 2. Architectural & Algorithmic Improvements Implemented
+1. **Disentangled Inter-Annotator Agreement (IAA) from Coverage Granularity**:
+   - Added `paired_count = len(paired_scores)` to [`ConsensusAuditReport`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/schemas.py).
+   - Redefined `concordance_rate` strictly over common paired extractions (the intersection):
+     $$\text{Concordance Rate} = \frac{\text{concordant\_count}}{\text{paired\_count}} \quad (\text{for } \text{paired\_count} > 0)$$
+   - Disentangled singletons (`SINGLE_AGENT_UNCONFIRMED`) as coverage differences rather than annotator contradictions.
+   - Updated logging string: `"Concordance Rate on Paired: X% (N concordant, M disputed / P paired | S singletons of T total)"`.
+2. **Bounded & Proportional Confidence Scoring Engine**:
+   - Replaced linear penalty with a proportional dispute penalty bounded at 0.25:
+     $$\Delta \text{Conf}_{\text{dispute}} = \min\left(0.25, \text{round}\left(\frac{\text{dispute\_count}}{\text{paired\_count}} \times 0.25, 2\right)\right)$$
+   - Capped single-agent coverage asymmetry penalty at a modest 0.08 (`min(0.08, round(unconfirmed_count * 0.01, 2))`).
+   - Ensures that papers with high empirical agreement retain high certified confidence ($\ge 80\%$), while true epistemic disagreements are clearly flagged without collapsing to zero.
+3. **Partition Regime Disambiguation & Macro-Average Alignment**:
+   - Propagated `data_budget_or_setting` across [`ConsensusScore`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/schemas.py) and [`RawExtractedScore`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/extraction/schemas.py).
+   - In [`AuditorAgent.audit_consensus`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/auditor.py), explicitly blocked pairing when `budget_a != budget_b`, ensuring separate experimental regimes remain distinct singletons instead of false disputes.
+   - Added macro-average synonym matching (`OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}`), ensuring that an agent labeling a summary as `"Mean"` and another as `"Overall"` match with full confidence (+3 points).
 
-
+### 3. Verification & Test Suite Status
+- **Test Suite**: Executed `.venv/bin/pytest tests/ -v`
+- **Result**: **60/60 tests passing in 0.51s** with 100% green coverage.
+  - Added [`test_audit_consensus_disentangled_granularity`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_consensus_auditing.py#L308-L345): Validating 100% paired concordance rate and high confidence ($\ge 85\%$) when Agent A extracts only the macro-average while Agent B extracts 3 organ rows.
+  - Added [`test_audit_consensus_bounded_dispute_penalty`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_consensus_auditing.py#L347-L389): Validating proportional dispute penalty (1 dispute out of 5 paired benchmarks yields confidence $\ge 80\%$, avoiding collapse).
+  - Added [`test_audit_consensus_data_budget_split_separation`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_consensus_auditing.py#L391-L425): Validating that 10% vs 20% semi-supervised splits match their identical regimes with 0 disputes.
