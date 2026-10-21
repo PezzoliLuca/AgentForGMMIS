@@ -67,19 +67,45 @@ Quando un paper non presenta tabelle numeriche (o presenta solo allucinazioni da
 
 ---
 
-### 6. Arbitraggio Dual-Agent
-L'estrazione viene eseguita in parallelo da due agenti indipendenti:
+---
+
+### 6. Arbitraggio Dual-Agent e Protocollo di Deliberazione in Doppio Cieco
+
+#### 6.1. Regola Fondamentale del Valore Massimo (Peak Performance / Highest DSC)
+In accordo con gli obiettivi del benchmark e le direttive del relatore, l'estrazione non vincola più il modello al solo prompt ad 1 punto:
+* **Principio del Valore Massimo**: per ciascun benchmark dataset pubblico, gli agenti devono estrarre il **massimo punteggio Dice (DSC)** conseguito dal modello proposto, indipendentemente dalla modalità di interazione (*bounding box*, *multi-click*, *1-point click*, o *fine-tuning*), purché il risultato appartenga al modello proposto e non a baseline concorrenti.
+* Se una tabella riporta sia la prestazione con box prompt che con 1 click, l'agente deve estrarre prioritariamente il valore massimo (es. box prompt), registrando comunque la modalità nel campo `prompt_type`.
+
+#### 6.2. Arbitraggio Round 1 (Indipendenza Epistemica)
+L'estrazione iniziale viene eseguita in parallelo da due agenti indipendenti senza comunicazione tra loro:
 * **Risoluzione Canonica**: i nomi dei dataset estratti dai due modelli vengono normalizzati sui nomi standard tramite `DatasetAliasResolver` (es. *"Beyond The Cranial Vault"* e *"Synapse"* ricondotti entrambi al nome canonico *"BTCV"*).
 * **Accoppiamento Punteggi**: l'Auditor accoppia le righe dei due agenti calcolando un punteggio di affinità basato su dataset canonico, equivalenza dei target anatomici (gestendo sinonimi standard: `overall`, `mean`, `average`), prompt type e data budget.
-* **Regole di Classificazione dei Punteggi**:
-  1. `CONCORDANT`: entrambi i modelli hanno estratto il punteggio e la differenza assoluta rispetta la soglia $|S_A - S_B| \le \epsilon$ con $\epsilon = 0.01$ il valore viene unificato come media: $S = (S_A + S_B) / 2$.
-  2. `DISPUTED`: la differenza supera la tolleranza ($|S_A - S_B| > 0.01$) oppure un modello ha estratto un valore e l'altro no. Il punteggio viene impostato a `None` e viene sollevato il flag disputed.
-  3. `SINGLE_AGENT_UNCONFIRMED`: benchmark identificato da uno solo dei due agenti. Viene conservato a database ma contrassegnato con peso di confidenza ridotto. (questo diventerà poi il loop di cui si parlava)
-* **Consenso sui Parametri Architetturali**:
-  * I parametri $P_A$ e $P_B$ sono considerati concordanti se la differenza rispetta il limite: $|P_A - P_B| / \max(P_A, P_B) \le 0.05$. In caso positivo, il valore risolto è la media; altrimenti lo stato è marcato come `DISPUTED`.
-* **Metriche di Accordo**:
-  * **Inter-Model Dice MAE**: media di $|S_A - S_B|$ calcolata sulle sole coppie di benchmark estratte da entrambi gli agenti.
-  * **Concordance Rate**: rapporto tra numero di punteggi concordanti e numero totale di coppie di benchmark comuni.
+* **Regole di Classificazione dei Punteggi (Round 1)**:
+  1. `CONCORDANT`: entrambi i modelli hanno estratto il punteggio e la differenza assoluta rispetta la soglia $|S_A - S_B| \le \epsilon$ con $\epsilon = 0.01$ (1% DSC). Il valore viene unificato come media: $S = (S_A + S_B) / 2$.
+  2. `DISPUTED`: la differenza supera la tolleranza ($|S_A - S_B| > 0.01$). Il punteggio viene contrassegnato per la re-interrogazione.
+  3. `SINGLE_AGENT_UNCONFIRMED`: benchmark identificato da uno solo dei due agenti (omissione da parte dell'altro). Viene contrassegnato per la verifica cieca.
+
+#### 6.3. Protocollo di Re-interrogazione in Doppio Cieco (Double-Blind Iterative Deliberation)
+Per evitare bias cognitivo di ancoraggio (*Anchoring Bias*) e conformismo passivo degli LLM (*Sycophancy*), la re-interrogazione avviene **in doppio cieco**: **nessun agente riceve mai il valore numerico né l'output estratto dall'altro agente**.
+
+Il ciclo si ripete per un massimo di $N$ round (default: $N=3$, max $N=5$):
+1. **Challenge Cieca per Disputa di Valore (Dataset $D$)**:
+   * Viene inviato a entrambi i modelli un prompt mirato:
+     > *"Sul dataset [D], l'altro estrattore ha rilevato una discrepanza rispetto alla tua estrazione. Ti chiediamo di riesaminare attentamente la tabella o sezione del paper relativa a questo benchmark, con l'obiettivo di individuare il valore MASSIMO di Dice (DSC) del modello proposto.<br>- Se sei convinto che il tuo valore attuale rappresenti già il reale massimo del modello proposto, MANTIENI la tua decisione motivandola.<br>- Se invece individui un valore maggiore, una riga/colonna diversa o un errore, aggiorna il punteggio.<br>NON inventare numeri e cita esplicitamente riga e colonna della tabella."*
+2. **Challenge Cieca per Omissione (Agente A ha estratto $D$, Agente B non lo ha estratto)**:
+   * Viene interrogato esclusivamente l'Agente B:
+     > *"Un altro estrattore indipendente ha rilevato la presenza di una valutazione sul dataset [D] per il modello proposto, che tu non hai estratto. Verifica nel testo e nelle tabelle se [D] è effettivamente valutato e riporta un punteggio DSC volumetrico per il modello proposto. Se presente, estrai il valore massimo. Se invece ritieni che debba essere escluso (es. è 2D, è un competitor, o il dato è solo grafico), conferma l'esclusione motivandola."*
+
+#### 6.4. Condizioni di Convergenza ed Early Stopping
+A ogni round $k$, l'Auditor ricalcola la concordanza:
+* **Early Stopping per Convergenza**: se tutte le discrepanze e le omissioni sono risolte $\rightarrow$ il ciclo termina immediatamente con successo (`VERIFIED_BY_DELIBERATION`).
+* **Early Stopping per Stallo (Equilibrio di Nash)**: se tra il round $k$ e il round $k-1$ nessuno dei due agenti modifica le proprie risposte, il ciclo si interrompe per evitare chiamate ridondanti.
+* **Disputa Permanente**: se dopo $N$ round rimangono divergenze irrisolte, l'Auditor contrassegna il record come `PERMANENT_DISPUTE`, registrando la traiettoria di tutti i round nel log per la revisione umana.
+
+#### 6.5. Consenso sui Parametri Architetturali e Metriche
+* I parametri $P_A$ e $P_B$ sono considerati concordanti se $|P_A - P_B| / \max(P_A, P_B) \le 0.05$.
+* **Inter-Model Dice MAE**: media di $|S_A - S_B|$ sulle coppie di benchmark.
+* **Concordance Rate**: percentuale di benchmark concordanti sul totale univoco.
 
 ---
 

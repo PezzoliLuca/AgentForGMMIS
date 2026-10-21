@@ -76,6 +76,12 @@ def main():
         help="If set, AuditorAgent cross-checks extracted values against human survey ground truth in SQLite (benchmark mode). Default: False (autonomous deploy mode).",
     )
     parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=3,
+        help="Maximum deliberation rounds in dual-agent mode (default: 3; set to 1 to disable re-interrogation)",
+    )
+    parser.add_argument(
         "--archive-legacy",
         action="store_true",
         default=False,
@@ -110,6 +116,7 @@ def main():
             "model_b": model_b if is_dual else None,
             "compare_source": args.compare_source,
             "audit_ground_truth": args.audit_ground_truth,
+            "max_rounds": args.max_rounds,
         },
     )
 
@@ -191,14 +198,24 @@ def main():
                 pdf_path = fetcher.fetch_for_model(model_id)
                 manuscript = PDFParser.parse(pdf_path)
 
+                deliberation_trajectory = []
                 if is_dual:
-                    extracted_a, extracted_b = coordinator.extract_manuscript_parallel(manuscript)
-                    audit_report = auditor.audit_consensus(
-                        extracted_a,
-                        extracted_b,
-                        manuscript=manuscript,
-                        benchmark_mode=args.audit_ground_truth,
-                    )
+                    if args.max_rounds > 1:
+                        extracted_a, extracted_b, audit_report, deliberation_trajectory = coordinator.extract_manuscript_with_deliberation(
+                            manuscript=manuscript,
+                            auditor=auditor,
+                            max_rounds=args.max_rounds,
+                            benchmark_mode=args.audit_ground_truth,
+                            verbose=True,
+                        )
+                    else:
+                        extracted_a, extracted_b = coordinator.extract_manuscript_parallel(manuscript)
+                        audit_report = auditor.audit_consensus(
+                            extracted_a,
+                            extracted_b,
+                            manuscript=manuscript,
+                            benchmark_mode=args.audit_ground_truth,
+                        )
                     reconciled_scores = []
                     for cs in audit_report.consensus_scores:
                         if cs.resolved_score is not None:
@@ -261,6 +278,7 @@ def main():
                     repo_inspector_result=repo_inspector if repo_recovered else None,
                     outreach_draft=outreach_draft,
                     elapsed_seconds=elapsed,
+                    deliberation_trajectory=deliberation_trajectory,
                 )
 
                 dice_mae_str = f"{report.dice_mae:.4f}" if report.dice_mae is not None else "N/A"

@@ -112,6 +112,22 @@ class LLMClient:
                 )
                 return mock_data  # type: ignore
 
+            if response_model.__name__ == "ReinterrogationScoreResponse":
+                import re
+                from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+                m_ds = re.search(r"Dataset Name:\s*([^\n\r]+)", prompt) or re.search(r"dataset '([^']+)'", prompt)
+                ds_name = m_ds.group(1).strip() if m_ds else "BraTS"
+                return ReinterrogationScoreResponse(
+                    dataset_name=ds_name,
+                    organ_or_task="Overall",
+                    is_valid_benchmark=True,
+                    dice_score=0.8850,
+                    prompt_type="bounding box",
+                    table_or_section_ref="Table 1",
+                    maintained_original=True,
+                    rationale="Verified peak score in Table 1 under bounding box prompt.",
+                )  # type: ignore
+
             return response_model.model_construct()
 
         # Native Google GenAI Provider

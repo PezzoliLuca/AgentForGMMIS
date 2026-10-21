@@ -479,5 +479,54 @@ Keep these points in mind when drafting chapters of the final dissertation:
   the system completely eliminates cross-partition false disputes while faithfully capturing the full multi-regime evaluation matrix.
 * **Defense Impact**: Demonstrates mathematically rigorous multi-agent consensus scoring that handles varying granularity levels, prevents false-positive dispute cascades, and grounds epistemic arbitration in clean decision theory.
 
+---
+
+### 29. Double-Blind Multi-Agent Iterative Deliberation & Peak Performance Extraction
+
+* **Motivation & Academic Advisor Guidance**:
+  In human systematic literature reviews (e.g. Moglia et al.), multiple reviewers meet in iterative consensus rounds to reconcile discrepancies and resolve omissions. Two key directives govern this process:
+  1. **Peak Performance Principle (Maximum Achievable DSC)**: The literature survey aims to establish the upper bound and true architectural frontier of generalist models against specialized baselines. Therefore, for every target benchmark dataset, the extraction engine must target the **maximum (highest) DSC score achieved by the proposed model**, regardless of whether it was attained via bounding box prompts, multi-point clicks, or fine-tuning (replacing prior artificial restrictions that penalized multi-prompt regimes).
+  2. **Double-Blind Deliberation (Zero Numerical Leakage)**: Conventional multi-agent debate often leaks the competitor's raw answer (e.g., *"Model B extracted 0.85; what do you say?"*). In empirical LLM literature, this triggers severe **Anchoring Bias** and **Sycophancy** (where the model passively capitulates to the peer's suggestion rather than verifying empirical text). To preserve epistemic integrity, the deliberation must be strictly double-blind: neither agent ever observes the other agent's numerical outputs.
+
+* **Multi-Round Deliberation Lifecycle**:
+  ```
+  Round 1: Parallel Epistemic Isolation (Agent A & Agent B extract independently)
+                             │
+                             ▼
+  Auditor Consensus Matrix: Classify Concordant vs Disputed (|Δ| > 0.01) vs Omitted
+                             │
+            ┌────────────────┴────────────────┐
+            ▼                                 ▼
+   [Dispute Count == 0 &            [Disputes or Omissions Exist]
+    Omission Count == 0]                      │
+            │                                 ▼
+            │               Round k+1: Double-Blind Targeted Challenge
+            │               ├── Disputed Item: Blind challenge to A and B
+            │               └── Omitted Item: Blind challenge to omitting agent
+            │                                 │
+            │                                 ▼
+            │               Auditor Re-evaluation & Early Stopping Check
+            │               ├── All resolved? ───► STOP (VERIFIED_BY_DELIBERATION)
+            │               ├── Nash Equilibrium (Stall)? ───► STOP (STABLE)
+            │               └── k == MAX_ROUNDS? ───► STOP (PERMANENT_DISPUTE)
+            │                                 │
+            └─────────────────────────────────┴──► Final Reconciled Record
+  ```
+
+* **Blind Challenge Protocol Design**:
+  1. **Blind Discrepancy Challenge (Dataset $D$)**:
+     Neither agent is shown the other's extracted number. Both are prompted:
+     > *"On dataset [D], another independent extractor reached a divergent result regarding the peak performance of the proposed model. Re-read the relevant table/section of the manuscript targeting the MAXIMUM Dice Similarity Coefficient (DSC) for the proposed model. If you are confident your original extraction already represents the true peak score, maintain your decision and state your rationale. If you identify a higher valid score, a misaligned column, or a baseline confusion, update your score. Do not guess; cite the exact table row and column."*
+  2. **Blind Omission Challenge (Dataset $D$ found only by one agent)**:
+     The omitting agent is queried without leaking the extracted score:
+     > *"Another independent extractor identified an evaluation on dataset [D] for the proposed model, which you did not extract. Inspect the manuscript text and tables: is [D] evaluated with a quantitative 3D DSC score for the proposed model? If yes, extract its peak score. If it was excluded for legitimate reasons (e.g., 2D modality, competitor baseline, or graphical-only plot), confirm the exclusion and state the reason."*
+
+* **Convergence Trajectory & Artifact Persistence**:
+  For each paper undergoing iterative deliberation, the logging engine persists:
+  - `round_1/`, `round_2/`, ..., `round_k/` subdirectories with independent extractions.
+  - `convergence_trajectory.json` tracing the evolution of concordance rate ($C_1 \to C_2 \to C_k$) and MAE ($\text{MAE}_1 \to \text{MAE}_k$).
+  This provides a concrete empirical graph for the thesis dissertation demonstrating multi-agent convergence dynamics under epistemic uncertainty.
+
+
 
 

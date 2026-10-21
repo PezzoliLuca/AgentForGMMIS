@@ -31,6 +31,10 @@ class RawExtractedScore(BaseModel):
         None,
         description="Prompt interaction setting if applicable (e.g. '1 point', '3 points', '5 points', '10 points', 'bounding box', 'automatic')",
     )
+    notes: Optional[str] = Field(
+        None,
+        description="Qualitative extraction notes or deliberation rationale",
+    )
 
     @field_validator("dice_score", mode="before")
     @classmethod
@@ -68,3 +72,64 @@ class ExtractedPaperData(BaseModel):
         description="All quantitative Dice scores extracted from tables and text",
     )
     extraction_notes: Optional[str] = Field(None, description="Qualitative notes or ambiguities encountered")
+
+
+class ReinterrogationScoreResponse(BaseModel):
+    """Structured response from an agent during double-blind deliberation re-interrogation."""
+
+    dataset_name: str = Field(..., description="Canonical or reported dataset name")
+    organ_or_task: str = Field(..., description="Target anatomy or evaluation task")
+    is_valid_benchmark: bool = Field(
+        True,
+        description="True if this is a valid 3D radiological public evaluation of the proposed model; False if it should be excluded",
+    )
+    dice_score: Optional[float] = Field(
+        None,
+        description="Peak (maximum) Dice Similarity Coefficient for the proposed model. None if excluded or graphical-only",
+    )
+    prompt_type: Optional[str] = Field(
+        None,
+        description="Prompt regime achieving the peak score (e.g. 'bounding box', '5 points', '1 point', 'automated')",
+    )
+    table_or_section_ref: Optional[str] = Field(None, description="Source table or section reference in the manuscript")
+    maintained_original: bool = Field(
+        True,
+        description="True if the agent maintained its previous stance; False if it updated or corrected the score",
+    )
+    rationale: str = Field(..., description="Concise explanation grounded in manuscript text/tables")
+    exclusion_reason: Optional[str] = Field(
+        None,
+        description="Reason for exclusion if is_valid_benchmark=False (e.g. '2D modality', 'baseline model', 'private data')",
+    )
+
+    @field_validator("dice_score", mode="before")
+    @classmethod
+    def normalize_score(cls, v: Optional[float]) -> Optional[float]:
+        if v is None:
+            return None
+        val = float(v)
+        if val > 1.0 and val <= 100.0:
+            val = val / 100.0
+        if val < 0.0 or val > 1.0:
+            raise ValueError(f"Dice score must be in range [0.0, 1.0], got {val}")
+        return round(val, 4)
+
+
+class DeliberationRoundSummary(BaseModel):
+    """Summary record of a single deliberation round."""
+
+    round_number: int
+    disputes_before: int
+    unconfirmed_before: int
+    concordant_before: int
+    concordance_rate_before: float
+    inter_model_mae_before: Optional[float]
+    disputes_after: int
+    unconfirmed_after: int
+    concordant_after: int
+    concordance_rate_after: float
+    inter_model_mae_after: Optional[float]
+    resolved_count: int
+    stalled: bool = False
+    details: List[str] = Field(default_factory=list)
+

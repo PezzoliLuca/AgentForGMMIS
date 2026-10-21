@@ -47,6 +47,12 @@ def main():
         help="Optional tag for the run directory name",
     )
     parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=3,
+        help="Maximum deliberation rounds in dual-agent mode (default: 3; set to 1 to disable re-interrogation)",
+    )
+    parser.add_argument(
         "--no-save-logs",
         action="store_true",
         default=False,
@@ -92,9 +98,14 @@ def main():
     from agent_gmmis.extraction.pdf_parser import PDFParser
     manuscript = PDFParser.parse(pdf_file)
 
+    deliberation_trajectory = []
     if is_dual:
+        from agent_gmmis.auditing.auditor import AuditorAgent
         from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
         from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
+        db = DatabaseManager(DEFAULT_DB_PATH)
+        auditor = AuditorAgent(db_manager=db)
+
         client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, api_key=api_key))
         agent_a = ExtractionAgent(llm_client=client_a)
         client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, api_key=api_key))
@@ -103,7 +114,22 @@ def main():
         print(f"🤖 Invoking DualExtractionCoordinator in parallel:")
         print(f"   • Agent A: {provider_a} ({model_a})")
         print(f"   • Agent B: {provider_b} ({model_b})")
-        extracted_data_a, extracted_data_b = coordinator.extract_manuscript_parallel(manuscript)
+        if args.max_rounds > 1:
+            extracted_data_a, extracted_data_b, audit_report, deliberation_trajectory = coordinator.extract_manuscript_with_deliberation(
+                manuscript=manuscript,
+                auditor=auditor,
+                max_rounds=args.max_rounds,
+                benchmark_mode=bool(args.evaluate or args.model_id),
+                verbose=True,
+            )
+        else:
+            extracted_data_a, extracted_data_b = coordinator.extract_manuscript_parallel(manuscript)
+            audit_report = auditor.audit_consensus(
+                extracted_data_a,
+                extracted_data_b,
+                manuscript=manuscript,
+                benchmark_mode=bool(args.evaluate or args.model_id),
+            )
         extracted_data = extracted_data_a
     else:
         llm_config = LLMConfig(
@@ -171,18 +197,16 @@ def main():
     # -------------------------------------------------------------
     # Step 3.1: AuditorAgent ("Il Vigile" - Quality Assurance Critic / Arbiter)
     # -------------------------------------------------------------
-    from agent_gmmis.auditing.auditor import AuditorAgent
-
     print("\n" + "=" * 70)
     print("👮 AUDITOR AGENT ('IL VIGILE') QUALITY ASSURANCE CERTIFICATION")
     print("=" * 70)
-    db = DatabaseManager(DEFAULT_DB_PATH)
-    auditor = AuditorAgent(db_manager=db)
 
-    if is_dual:
-        audit_report = auditor.audit_consensus(
-            extracted_data_a,
-            extracted_data_b,
+    if not is_dual:
+        from agent_gmmis.auditing.auditor import AuditorAgent
+        db = DatabaseManager(DEFAULT_DB_PATH)
+        auditor = AuditorAgent(db_manager=db)
+        audit_report = auditor.audit(
+            extracted_data,
             manuscript=manuscript,
             benchmark_mode=bool(args.evaluate or args.model_id),
         )
@@ -342,6 +366,7 @@ def main():
                 "provider_b": provider_b if is_dual else None,
                 "model_b": model_b if is_dual else None,
                 "compare_source": args.compare_source,
+                "max_rounds": args.max_rounds,
             },
         )
         paper_dir = run_logger.log_paper_extraction(
@@ -352,6 +377,7 @@ def main():
             final_extracted=extracted_data,
             eval_report=report if (args.evaluate or gt_model) and 'report' in locals() else None,
             repo_inspector_result=repo_inspector if 'reaudited_report' in locals() and reaudited_report else None,
+            deliberation_trajectory=deliberation_trajectory,
         )
         print("\n" + "=" * 70)
         print("📁 INTERMEDIATE ARTIFACTS & LOGS PERSISTED")
@@ -361,6 +387,8 @@ def main():
         if is_dual:
             print(f"• Agent B:       {paper_dir / 'agent_b_extracted.json'}")
             print(f"• Consensus:     {paper_dir / 'consensus_matrix.json'}")
+            if deliberation_trajectory:
+                print(f"• Deliberation:  {paper_dir / 'deliberation_trajectory.json'} ({len(deliberation_trajectory)} rounds)")
         print(f"• Audit Report:  {paper_dir / 'audit_report.json'}")
         print(f"• Reconciled:    {paper_dir / 'final_reconciled.json'}")
         if (args.evaluate or gt_model) and 'report' in locals():

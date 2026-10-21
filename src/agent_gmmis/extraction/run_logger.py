@@ -142,6 +142,7 @@ class RunLogger:
         repo_inspector_result: Optional[Any] = None,
         outreach_draft: Optional[Any] = None,
         elapsed_seconds: Optional[float] = None,
+        deliberation_trajectory: Optional[List[Any]] = None,
         error: Optional[str] = None,
     ) -> Path:
         """
@@ -151,6 +152,7 @@ class RunLogger:
         - agent_a_extracted.json
         - agent_b_extracted.json (if present)
         - consensus_matrix.json (if ConsensusAuditReport)
+        - deliberation_trajectory.json (if multi-round deliberation occurred)
         - audit_report.json
         - final_reconciled.json
         - evaluation.json (if present)
@@ -223,6 +225,18 @@ class RunLogger:
             summary_data["artifacts"]["consensus_matrix"] = "consensus_matrix.json"
             summary_data["concordance_rate"] = consensus_data["concordance_rate"]
             summary_data["inter_model_dice_mae"] = consensus_data["inter_model_dice_mae"]
+
+        # 3.5 Deliberation Trajectory (if multi-round deliberation occurred)
+        if deliberation_trajectory:
+            traj_data = [
+                d.model_dump() if hasattr(d, "model_dump") else d
+                for d in deliberation_trajectory
+            ]
+            path_traj = paper_dir / "deliberation_trajectory.json"
+            with open(path_traj, "w", encoding="utf-8") as f:
+                json.dump(traj_data, f, indent=2)
+            summary_data["artifacts"]["deliberation_trajectory"] = "deliberation_trajectory.json"
+            summary_data["deliberation_rounds_count"] = len(deliberation_trajectory)
 
         # 4. Audit Report certification
         if audit_report:

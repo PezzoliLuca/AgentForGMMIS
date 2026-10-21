@@ -24,7 +24,7 @@ Follow these strict extraction guidelines:
    - Distinguish whether a score belongs to the PROPOSED model or an evaluated BASELINE model (e.g. nnU-Net, Swin UNETR).
    - Identify the canonical dataset name and target organ/task. When a paper mentions challenge datasets under generic organ or modality labels, resolve them to their standard canonical challenge name if disclosed in the text (e.g. "Abdomen CT" / FLARE -> "FLARE", "Abdomen MR" / AMOS -> "AMOS", "Synapse" / Beyond the Cranial Vault -> "BTCV", "BraTS21" -> "BraTS", "ATLAS v2.0" -> "ATLAS v2.0", "Prost.MRI" / PROMISE12 -> "PROMISE12", "Fed-KiTS" -> "KiTS", "TotalSegmentator" -> "TotalSegmentator").
    - TABLE PRIORITIZATION (SOTA OVER ABLATIONS): Prioritize the primary comparative benchmark table (typically titled "Comparison with State-of-the-Art", "Main Results", or "Test Set Evaluation") over internal ablation study tables (e.g. hyperparameter tuning sweeps, feature ablations, or validation-only checks).
-   - PROMPT REGIMES (1-POINT STANDARDIZATION): For promptable/interactive models (e.g. SAM-based architectures), tables often report performance across multiple prompt settings (e.g. "1 pt", "3 pts", "5 pts", "10 pts", "bounding box"). You MUST ALWAYS prioritize and extract the single-click baseline ("1 point" / "1 pt") with `prompt_type="1 point"`. If token or score budget limits extraction, NEVER omit the 1-point prompt in favor of multi-click or box prompts, as standardized literature surveys (Moglia et al.) explicitly standardize on 1-point interaction for fair comparison against automated baselines!
+   - PEAK PERFORMANCE / MAXIMUM DSC TARGET: For each evaluated benchmark dataset, extract the HIGHEST (maximum achievable) Dice Similarity Coefficient (DSC) reported for the PROPOSED model across all tested prompt regimes or experimental settings (e.g. bounding box prompt, 5-point click, 1-point click, or fine-tuning regime). Record the prompt setting in `prompt_type` (e.g. "bounding box", "5 points", "1 point", "automated"), but ALWAYS select the peak (maximum) quantitative score achieved by the proposed model. Never select an inferior score (such as an under-prompted 1-point score) if the paper demonstrates higher valid performance with a box or multi-point prompt!
    - MACRO-AVERAGE & MULTI-ORGAN SUMMARIES: When a table reports metrics for individual anatomical sub-structures (e.g. Enhancing Tumor, Tumor Core, Whole Tumor in BraTS) or multiple test splits and provides an "Average" or "Mean" summary column/row, ALWAYS extract the aggregated "Mean/Average" score with `organ_or_task='Overall'` or `'Mean'`, as literature surveys index the macro-average performance.
    - MULTI-MODALITY & TEST SETS: If a table reports results across multiple modalities (e.g. T1, T2, T1ce, FLAIR) or multiple test sets (e.g. MRI test set vs CT test set in TotalSegmentator), extract each score and also the overall mean if reported.
    - DATA PARTITIONS & BUDGETS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM, SFR SAM), tables report varying amounts of labeled data (e.g. 1%, 5%, 10%, 100%) or learning settings (Federated vs Centralized, Communication rounds). Always extract each setting and record it in `data_budget_or_setting` (e.g. "10% labeled", "1% labeled", "5 clients") so multiple legitimate experimental regimes are distinguished from duplicate contradictions!
@@ -46,5 +46,58 @@ Total Pages: {total_pages}
 {content}
 
 Extract the complete structured output conforming to the required schema.
-Prioritize the primary comparative benchmark tables of the proposed model (extract up to the top 25 key evaluation benchmark scores).
+Prioritize the primary comparative benchmark tables of the proposed model, capturing the peak (maximum achievable) Dice score for each evaluated dataset (extract up to the top 25 key evaluation benchmark scores).
+"""
+
+# ==============================================================================
+# Double-Blind Multi-Agent Iterative Deliberation Prompts
+# ==============================================================================
+
+BLIND_DISCREPANCY_SYSTEM_PROMPT = """You are an expert scientific AI researcher conducting a double-blind peer deliberation on a medical image segmentation benchmark.
+Your task is to re-evaluate a disputed benchmark where another independent extractor reached a divergent result.
+
+Strict Double-Blind Deliberation Rules:
+1. TARGET PEAK PERFORMANCE: The survey goal is the MAXIMUM quantitative Dice Similarity Coefficient (DSC) achieved by the PROPOSED model on the specified dataset.
+2. SCIENTIFIC INTEGRITY & RESISTANCE TO PEER PRESSURE: Do NOT change your score simply because another extractor disagreed. If you verify that your original extraction already represents the true peak score of the proposed model, firmly MAINTAIN it and explain your rationale citing table rows/columns.
+3. OBJECTIVE CORRECTION: If you re-inspect the table and discover a higher valid score for the proposed model (e.g. bounding box prompt instead of point prompt, or macro-average instead of a single class), or if you realize you accidentally extracted a competitor baseline row, CORRECT your score.
+4. ABSOLUTE HONESTY: Do NOT invent numbers. If ambiguous, explain clearly in your rationale.
+"""
+
+BLIND_DISCREPANCY_USER_TEMPLATE = """A double-blind inter-annotator discrepancy was flagged for the following benchmark:
+
+Dataset Name: {dataset_name}
+Target Organ / Task: {organ_or_task}
+Your Previous Extracted Score: {previous_score}
+Your Previous Prompt Setting: {previous_prompt}
+
+Another independent reviewer evaluated this same benchmark and reached a divergent result regarding the peak performance of the proposed model '{proposed_model_id}'.
+
+=== RELEVANT MANUSCRIPT TABLES & CONTENT ===
+{content}
+
+Please re-evaluate this benchmark:
+1. Re-inspect the tables reporting evaluation on '{dataset_name}'.
+2. Determine the true MAXIMUM valid Dice Similarity Coefficient (DSC) for the PROPOSED model '{proposed_model_id}'.
+3. State whether you maintained your original score or updated it, and provide a clear rationale grounded in the manuscript text/tables.
+"""
+
+BLIND_OMISSION_SYSTEM_PROMPT = """You are an expert scientific AI researcher conducting a double-blind peer deliberation on a medical image segmentation benchmark.
+Your task is to verify an overlooked benchmark candidate that was identified by another independent extractor.
+
+Strict Double-Blind Deliberation Rules:
+1. RIGOROUS VERIFICATION: Verify whether the manuscript actually evaluates the PROPOSED model on the specified dataset with a quantitative 3D radiological Dice score.
+2. LEGITIMATE EXCLUSION: If the dataset should NOT be included according to survey criteria (e.g. 2D non-radiological data, private hospital dataset, evaluated solely for competitor baselines, or reported only graphically in charts without scalar numbers), set is_valid_benchmark=False and explain why.
+3. PEAK PERFORMANCE EXTRACTION: If the dataset is genuinely evaluated for the proposed model, extract its MAXIMUM (peak) DSC score and prompt regime.
+4. ABSOLUTE HONESTY: Never fabricate numbers; cite the exact table and row.
+"""
+
+BLIND_OMISSION_USER_TEMPLATE = """Another independent reviewer identified an evaluation on dataset '{dataset_name}' for the proposed model '{proposed_model_id}', but you did not extract any benchmark score for it.
+
+=== RELEVANT MANUSCRIPT TABLES & CONTENT ===
+{content}
+
+Please verify this benchmark candidate:
+1. Check if '{dataset_name}' appears in the manuscript tables or text for proposed model '{proposed_model_id}'.
+2. If it is evaluated with a quantitative 3D Dice score, extract the MAXIMUM (peak) score achieved by the proposed model.
+3. If it should be excluded (e.g. 2D, private, baseline-only, or graphical-only without scalar values), set is_valid_benchmark=False and state the reason.
 """

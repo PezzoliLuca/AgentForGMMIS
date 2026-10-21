@@ -423,3 +423,302 @@ class TestConsensusAuditor:
         assert report.concordant_count == 2
         assert report.dispute_count == 0
         assert report.concordance_rate == 1.0
+
+
+class TestDualExtractionDeliberation:
+    """Verifies double-blind multi-round deliberation between ExtractionAgent instances."""
+
+    def test_reinterrogate_discrepancy_double_blind_prompt(self):
+        """Verifies that reinterrogate_discrepancy builds a strict blind prompt without leaking competitor data."""
+        client = LLMClient(config=LLMConfig(provider="mock"))
+        agent = ExtractionAgent(llm_client=client)
+
+        manuscript = ParsedManuscript(
+            file_path="dummy.pdf",
+            title="MedSAM 3D",
+            abstract="3D segmentation model.",
+            total_pages=3,
+            pages_text={
+                1: "MedSAM 3D Introduction",
+                2: "Table 1: Evaluation on BTCV. MedSAM achieves 0.8850 under bounding box prompt.",
+            },
+            table_pages=[2],
+        )
+
+        resp = agent.reinterrogate_discrepancy(
+            manuscript=manuscript,
+            dataset_name="BTCV",
+            organ_or_task="Overall",
+            previous_score=0.7500,
+            previous_prompt="1 point",
+            proposed_model_id="MedSAM 3D",
+        )
+
+        assert resp.dataset_name == "BTCV"
+        assert resp.is_valid_benchmark is True
+        assert resp.dice_score is not None
+
+    def test_reinterrogate_omission_double_blind_prompt(self):
+        """Verifies that reinterrogate_omission challenges the agent without leaking candidate numbers."""
+        client = LLMClient(config=LLMConfig(provider="mock"))
+        agent = ExtractionAgent(llm_client=client)
+
+        manuscript = ParsedManuscript(
+            file_path="dummy.pdf",
+            title="MedSAM 3D",
+            abstract="3D segmentation model.",
+            total_pages=3,
+            pages_text={
+                1: "MedSAM 3D Introduction",
+                2: "Table 2: AMOS Abdominal CT evaluation. Dice score: 0.8210.",
+            },
+            table_pages=[2],
+        )
+
+        resp = agent.reinterrogate_omission(
+            manuscript=manuscript,
+            dataset_name="AMOS",
+            proposed_model_id="MedSAM 3D",
+        )
+
+        assert resp.dataset_name == "AMOS"
+        assert resp.is_valid_benchmark is True
+
+    def test_deliberation_initial_consensus_no_extra_rounds(self, auditor):
+        """When Round 1 produces full concordance, deliberation terminates immediately."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+        data_a = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8850),
+            ],
+        )
+        data_b = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8845),
+            ],
+        )
+
+        agent_a = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_b = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_a.process_manuscript = lambda m: data_a
+        agent_b.process_manuscript = lambda m: data_b
+
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        manuscript = ParsedManuscript(file_path="test.pdf", title="MedSAM", total_pages=1, pages_text={1: "test"})
+
+        ext_a, ext_b, final_report, trajectory = coordinator.extract_manuscript_with_deliberation(
+            manuscript=manuscript,
+            auditor=auditor,
+            max_rounds=3,
+            verbose=False,
+        )
+
+        assert final_report.dispute_count == 0
+        assert final_report.concordant_count == 1
+        assert len(trajectory) == 0
+
+    def test_deliberation_resolves_discrepancy(self, auditor):
+        """Verifies that an inter-model discrepancy is resolved when an agent corrects its score in Round 2."""
+        from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+        data_a = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8850, prompt_type="bounding box"),
+            ],
+        )
+        data_b = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.7500, prompt_type="1 point"),
+            ],
+        )
+
+        agent_a = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_b = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_a.process_manuscript = lambda m: data_a
+        agent_b.process_manuscript = lambda m: data_b
+
+        # Agent A maintains 0.8850
+        agent_a.reinterrogate_discrepancy = lambda m, ds, o, s, p, mod: ReinterrogationScoreResponse(
+            dataset_name=ds,
+            organ_or_task=o,
+            is_valid_benchmark=True,
+            dice_score=0.8850,
+            prompt_type="bounding box",
+            maintained_original=True,
+            rationale="Peak score verified in Table 1",
+        )
+        # Agent B corrects to 0.8850 (peak bounding box score)
+        agent_b.reinterrogate_discrepancy = lambda m, ds, o, s, p, mod: ReinterrogationScoreResponse(
+            dataset_name=ds,
+            organ_or_task=o,
+            is_valid_benchmark=True,
+            dice_score=0.8850,
+            prompt_type="bounding box",
+            maintained_original=False,
+            rationale="Corrected to peak score under bounding box prompt in Table 1",
+        )
+
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        manuscript = ParsedManuscript(file_path="test.pdf", title="MedSAM", total_pages=1, pages_text={1: "test"})
+
+        ext_a, ext_b, final_report, trajectory = coordinator.extract_manuscript_with_deliberation(
+            manuscript=manuscript,
+            auditor=auditor,
+            max_rounds=3,
+            verbose=False,
+        )
+
+        assert final_report.dispute_count == 0
+        assert final_report.concordant_count == 1
+        assert final_report.concordance_rate == 1.0
+        assert len(trajectory) == 1
+        assert trajectory[0].round_number == 2
+        assert trajectory[0].disputes_before == 1
+        assert trajectory[0].disputes_after == 0
+        assert trajectory[0].resolved_count == 1
+        assert trajectory[0].stalled is False
+
+    def test_deliberation_resolves_omission(self, auditor):
+        """Verifies that an omitted benchmark is acknowledged and extracted by the omitting agent in Round 2."""
+        from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+        data_a = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BraTS", organ_or_task="Brain Tumor", dice_score=0.8850),
+                RawExtractedScore(dataset_name="AMOS", organ_or_task="Abdomen", dice_score=0.8200),
+            ],
+        )
+        data_b = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BraTS", organ_or_task="Brain Tumor", dice_score=0.8850),
+            ],
+        )
+
+        agent_a = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_b = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_a.process_manuscript = lambda m: data_a
+        agent_b.process_manuscript = lambda m: data_b
+
+        # Agent B verifies and extracts AMOS
+        agent_b.reinterrogate_omission = lambda m, ds, mod: ReinterrogationScoreResponse(
+            dataset_name=ds,
+            organ_or_task="Abdomen",
+            is_valid_benchmark=True,
+            dice_score=0.8200,
+            prompt_type="bounding box",
+            maintained_original=False,
+            rationale="Found in Table 3 of manuscript",
+        )
+
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        manuscript = ParsedManuscript(file_path="test.pdf", title="MedSAM", total_pages=1, pages_text={1: "test"})
+
+        ext_a, ext_b, final_report, trajectory = coordinator.extract_manuscript_with_deliberation(
+            manuscript=manuscript,
+            auditor=auditor,
+            max_rounds=3,
+            verbose=False,
+        )
+
+        assert final_report.unconfirmed_count == 0
+        assert final_report.concordant_count == 2
+        assert len(trajectory) == 1
+        assert trajectory[0].unconfirmed_before == 1
+        assert trajectory[0].unconfirmed_after == 0
+
+    def test_deliberation_epistemic_equilibrium_stalled(self, auditor):
+        """When neither agent changes its stance, deliberation detects equilibrium and terminates without looping."""
+        from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+        data_a = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8850),
+            ],
+        )
+        data_b = ExtractedPaperData(
+            paper_title="MedSAM",
+            proposed_model_id="MedSAM",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.7500),
+            ],
+        )
+
+        agent_a = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_b = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_a.process_manuscript = lambda m: data_a
+        agent_b.process_manuscript = lambda m: data_b
+
+        # Both firmly maintain their scores
+        agent_a.reinterrogate_discrepancy = lambda m, ds, o, s, p, mod: ReinterrogationScoreResponse(
+            dataset_name=ds,
+            organ_or_task=o,
+            is_valid_benchmark=True,
+            dice_score=0.8850,
+            maintained_original=True,
+            rationale="Grounded in Table 1 row 3",
+        )
+        agent_b.reinterrogate_discrepancy = lambda m, ds, o, s, p, mod: ReinterrogationScoreResponse(
+            dataset_name=ds,
+            organ_or_task=o,
+            is_valid_benchmark=True,
+            dice_score=0.7500,
+            maintained_original=True,
+            rationale="Grounded in Table 2 row 1",
+        )
+
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        manuscript = ParsedManuscript(file_path="test.pdf", title="MedSAM", total_pages=1, pages_text={1: "test"})
+
+        # Ask for 5 max rounds, but it should terminate at round 2 due to equilibrium
+        ext_a, ext_b, final_report, trajectory = coordinator.extract_manuscript_with_deliberation(
+            manuscript=manuscript,
+            auditor=auditor,
+            max_rounds=5,
+            verbose=False,
+        )
+
+        assert final_report.dispute_count == 1
+        assert len(trajectory) == 1
+        assert trajectory[0].stalled is True
+        assert trajectory[0].round_number == 2

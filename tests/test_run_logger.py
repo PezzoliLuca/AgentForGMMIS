@@ -255,6 +255,51 @@ class TestRunLogger:
         assert "All tests passed" in loaded_md
         logger.close()
 
+    def test_log_paper_extraction_with_deliberation_trajectory(self, tmp_path, mock_extracted_a, mock_extracted_b, mock_consensus_report):
+        from agent_gmmis.extraction.schemas import DeliberationRoundSummary
+        logger = RunLogger(base_dir=tmp_path, run_name="test_delib_logging", capture_stdout=False)
+
+        summary_r2 = DeliberationRoundSummary(
+            round_number=2,
+            disputes_before=1,
+            unconfirmed_before=1,
+            concordant_before=2,
+            concordance_rate_before=0.6667,
+            inter_model_mae_before=0.0350,
+            disputes_after=0,
+            unconfirmed_after=0,
+            concordant_after=4,
+            concordance_rate_after=1.0,
+            inter_model_mae_after=0.0005,
+            resolved_count=2,
+            stalled=False,
+            details=["Agent B confirmed omitted BraTS with score 0.8850"],
+        )
+
+        paper_dir = logger.log_paper_extraction(
+            model_id="MedSAM",
+            extracted_a=mock_extracted_a,
+            extracted_b=mock_extracted_b,
+            audit_report=mock_consensus_report,
+            deliberation_trajectory=[summary_r2],
+        )
+
+        traj_file = paper_dir / "deliberation_trajectory.json"
+        assert traj_file.exists()
+        with open(traj_file) as f:
+            data = json.load(f)
+        assert len(data) == 1
+        assert data[0]["round_number"] == 2
+        assert data[0]["resolved_count"] == 2
+        assert data[0]["concordance_rate_after"] == 1.0
+
+        summary_file = paper_dir / "paper_summary.json"
+        with open(summary_file) as f:
+            summary = json.load(f)
+        assert summary["artifacts"]["deliberation_trajectory"] == "deliberation_trajectory.json"
+        assert summary["deliberation_rounds_count"] == 1
+        logger.close()
+
     def test_sanitize_filename(self):
         assert sanitize_filename("MedSAM-2") == "MedSAM_2"
         assert sanitize_filename("Medical SAM 2 (MedSAM-2)") == "Medical_SAM_2_MedSAM_2"
