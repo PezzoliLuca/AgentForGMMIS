@@ -24,7 +24,7 @@ class LLMConfig:
     """Configuration for LLM inference."""
 
     provider: str = os.getenv("LLM_PROVIDER", "gemini")
-    model: str = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")
+    model: str = os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
     api_key: Optional[str] = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
     base_url: Optional[str] = os.getenv("LLM_BASE_URL", None)
     temperature: float = 0.0
@@ -151,7 +151,7 @@ class LLMClient:
             max_retries = 6
             backoff = 5.0
             current_model = self.config.model
-            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"]
+            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
             for attempt in range(max_retries):
                 try:
                     global _gemini_pacing_lock, _last_gemini_timestamp
@@ -170,12 +170,12 @@ class LLMClient:
                     break
                 except Exception as exc:
                     err_msg = str(exc)
-                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
+                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded", "404", "NOT_FOUND"]):
                         if attempt < max_retries - 1:
                             if attempt >= 1 and attempt < len(fallback_models):
                                 current_model = fallback_models[attempt]
-                                print(f"   ⚠️ [Google AI Studio RateLimit/503] Switching to fallback model '{current_model}'...")
-                            print(f"   ⚠️ [Google AI Studio RateLimit/503] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
+                                print(f"   ⚠️ [Google AI Studio API Retry] Switching to model '{current_model}'...")
+                            print(f"   ⚠️ [Google AI Studio API Retry] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
                             time.sleep(backoff)
                             backoff = min(backoff * 1.5, 20.0)
                             continue
@@ -312,7 +312,7 @@ class LLMClient:
                 config_obj.system_instruction = system_prompt
             import time
             current_model = self.config.model
-            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"]
+            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
             backoff = 4.0
             for attempt in range(5):
                 try:
@@ -332,7 +332,7 @@ class LLMClient:
                     return response.text or ""
                 except Exception as exc:
                     err_msg = str(exc)
-                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
+                    if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded", "404", "NOT_FOUND"]):
                         if attempt < 4:
                             if attempt >= 1 and attempt < len(fallback_models):
                                 current_model = fallback_models[attempt]

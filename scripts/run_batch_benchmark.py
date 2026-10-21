@@ -39,9 +39,9 @@ def main():
         help="Number of available arXiv models to test automatically if --models is not specified (default: 10)",
     )
     parser.add_argument("--provider", type=str, default=None, help="LLM provider: gemini, ollama, mufasa, or mock")
-    parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.1-flash-lite)")
+    parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.5-flash-lite)")
     parser.add_argument("--provider-a", type=str, default=None, help="LLM provider for Agent A (default: --provider or gemini)")
-    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.1-flash-lite)")
+    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.5-flash-lite)")
     parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If specified, enables dual-agent parallel consensus mode.")
     parser.add_argument("--base-url", type=str, default=None, help="Base URL for OpenAI-compatible LLM endpoint")
@@ -98,7 +98,7 @@ def main():
             print(f"📦 Archived {archived_count} legacy flat log files to logs/archive/legacy_flat_logs/")
 
     provider_a = args.provider_a or args.provider or "gemini"
-    model_a = args.model_a or args.model or "gemini-3.1-flash-lite"
+    model_a = args.model_a or args.model or "gemini-3.5-flash-lite"
     provider_b = args.provider_b or provider_a
     model_b = args.model_b
     is_dual = model_b is not None

@@ -20,9 +20,9 @@ def main():
     parser.add_argument("--model-id", type=str, default=None, help="Model ID from database.sqlite (automatically resolves arXiv link and downloads PDF)")
     parser.add_argument("--arxiv", type=str, default=None, help="arXiv ID or URL (e.g. 2408.00874) to download and extract automatically")
     parser.add_argument("--provider", type=str, default=None, help="LLM provider: gemini, ollama, mufasa, or mock")
-    parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.1-flash-lite)")
+    parser.add_argument("--model", type=str, default=None, help="LLM model name (default: gemini-3.5-flash-lite)")
     parser.add_argument("--provider-a", type=str, default=None, help="LLM provider for Agent A (default: --provider or gemini)")
-    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.1-flash-lite)")
+    parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.5-flash-lite)")
     parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If set, runs dual-agent parallel consensus mode.")
     parser.add_argument("--base-url", type=str, default=None, help="Base URL for OpenAI-compatible LLM endpoint")
@@ -80,7 +80,7 @@ def main():
     # Check API key configuration
     api_key = args.api_key or os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
     provider_a = args.provider_a or args.provider or os.getenv("LLM_PROVIDER", "gemini")
-    model_a = args.model_a or args.model or os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")
+    model_a = args.model_a or args.model or os.getenv("LLM_MODEL", "gemini-3.5-flash-lite")
     provider_b = args.provider_b or provider_a
     model_b = args.model_b
     is_dual = model_b is not None
