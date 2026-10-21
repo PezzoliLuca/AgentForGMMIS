@@ -44,9 +44,10 @@ export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME
 export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
 
 MODEL_NAME=${1:-"Qwen/Qwen2.5-14B-Instruct-AWQ"}
-GEMINI_MODEL=${GEMINI_MODEL:-"gemini-3.1-flash-lite"}
+GEMINI_MODEL=${GEMINI_MODEL:-"gemini-2.5-flash-lite"}
 PORT=8000
 COUNT=${2:-20}
+MAX_ROUNDS=${MAX_ROUNDS:-3}
 
 echo "=================================================================="
 echo "🤝 AGENT FOR GMMIS — DUAL-AGENT CONSENSUS BENCHMARK ON MUFASA"
@@ -55,6 +56,7 @@ echo "Node:         $(hostname)"
 echo "Agent A:      Mufasa GPU vLLM -> $MODEL_NAME"
 echo "Agent B:      Google AI Studio -> $GEMINI_MODEL"
 echo "Paper Count:  $COUNT"
+echo "Max Rounds:   $MAX_ROUNDS"
 echo "=================================================================="
 
 nvidia-smi
@@ -98,9 +100,12 @@ echo "✅ vLLM Server is LIVE and healthy! Starting Dual-Agent Benchmark..."
 python3 -u scripts/run_batch_benchmark.py \
     --provider-a mufasa \
     --model-a "$MODEL_NAME" \
+    --base-url-a "http://localhost:$PORT/v1" \
     --provider-b gemini \
     --model-b "$GEMINI_MODEL" \
     --count "$COUNT" \
+    --max-rounds "$MAX_ROUNDS" \
+    --tag "mufasa_qwen_gemini_${COUNT}" \
     "${@:3}"
 
 echo "=================================================================="

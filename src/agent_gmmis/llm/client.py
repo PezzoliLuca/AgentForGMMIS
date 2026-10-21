@@ -2,6 +2,8 @@
 
 import json
 import os
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Type, TypeVar
 from dotenv import load_dotenv
@@ -11,6 +13,10 @@ from pydantic import BaseModel
 load_dotenv()
 
 T = TypeVar("T", bound=BaseModel)
+
+# Thread-safe rate limiter to strictly respect Google AI Studio Free Tier limits (~15-20 RPM)
+_gemini_pacing_lock = threading.Lock()
+_last_gemini_timestamp = 0.0
 
 
 @dataclass
@@ -142,12 +148,20 @@ class LLMClient:
 
             import time
             response = None
-            max_retries = 5
-            backoff = 4.0
+            max_retries = 6
+            backoff = 5.0
             current_model = self.config.model
-            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"]
             for attempt in range(max_retries):
                 try:
+                    global _gemini_pacing_lock, _last_gemini_timestamp
+                    with _gemini_pacing_lock:
+                        now = time.time()
+                        elapsed = now - _last_gemini_timestamp
+                        if elapsed < 3.0:
+                            time.sleep(3.0 - elapsed)
+                        _last_gemini_timestamp = time.time()
+
                     response = self._gemini_client.models.generate_content(
                         model=current_model,
                         contents=prompt,
@@ -163,7 +177,7 @@ class LLMClient:
                                 print(f"   ⚠️ [Google AI Studio RateLimit/503] Switching to fallback model '{current_model}'...")
                             print(f"   ⚠️ [Google AI Studio RateLimit/503] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
                             time.sleep(backoff)
-                            backoff = min(backoff * 1.5, 15.0)
+                            backoff = min(backoff * 1.5, 20.0)
                             continue
                     raise exc
             import re
@@ -298,10 +312,18 @@ class LLMClient:
                 config_obj.system_instruction = system_prompt
             import time
             current_model = self.config.model
-            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
-            backoff = 3.0
-            for attempt in range(4):
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3.1-flash-lite"]
+            backoff = 4.0
+            for attempt in range(5):
                 try:
+                    global _gemini_pacing_lock, _last_gemini_timestamp
+                    with _gemini_pacing_lock:
+                        now = time.time()
+                        elapsed = now - _last_gemini_timestamp
+                        if elapsed < 3.0:
+                            time.sleep(3.0 - elapsed)
+                        _last_gemini_timestamp = time.time()
+
                     response = self._gemini_client.models.generate_content(
                         model=current_model,
                         contents=prompt,
@@ -311,11 +333,11 @@ class LLMClient:
                 except Exception as exc:
                     err_msg = str(exc)
                     if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded"]):
-                        if attempt < 3:
+                        if attempt < 4:
                             if attempt >= 1 and attempt < len(fallback_models):
                                 current_model = fallback_models[attempt]
                             time.sleep(backoff)
-                            backoff = min(backoff * 1.5, 10.0)
+                            backoff = min(backoff * 1.5, 15.0)
                             continue
                     raise exc
             return ""
