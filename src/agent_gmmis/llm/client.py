@@ -20,7 +20,7 @@ class LLMConfig:
     provider: str = os.getenv("LLM_PROVIDER", "gemini")
     model: str = os.getenv("LLM_MODEL", "gemini-3.1-flash-lite")
     api_key: Optional[str] = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    base_url: Optional[str] = os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/")
+    base_url: Optional[str] = os.getenv("LLM_BASE_URL", None)
     temperature: float = 0.0
 
 
@@ -56,17 +56,14 @@ class LLMClient:
             self._gemini_client = None
             dummy_key = self.config.api_key or "mufasa-local"
 
-            if self.config.provider == "ollama":
-                target_base = "http://localhost:11434/v1"
+            if self.config.base_url:
+                base_url = self.config.base_url
+            elif self.config.provider == "ollama":
+                base_url = "http://localhost:11434/v1"
             elif self.config.provider == "mufasa":
-                target_base = "http://localhost:8000/v1"
+                base_url = "http://localhost:8000/v1"
             else:
-                target_base = self.config.base_url
-
-            # If user explicitly supplied base_url and it differs from the gemini default, use user's
-            base_url = self.config.base_url
-            if not base_url or base_url == "https://generativelanguage.googleapis.com/v1beta/openai/":
-                base_url = target_base
+                base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
             self._openai_client = OpenAI(
                 api_key=dummy_key,
@@ -148,7 +145,7 @@ class LLMClient:
             max_retries = 5
             backoff = 4.0
             current_model = self.config.model
-            fallback_models = ["gemini-3.1-flash-lite", "gemini-3.8-flash"]
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
             for attempt in range(max_retries):
                 try:
                     response = self._gemini_client.models.generate_content(
@@ -169,12 +166,15 @@ class LLMClient:
                             backoff = min(backoff * 1.5, 15.0)
                             continue
                     raise exc
+            import re
             raw_text = response.text or "{}"
+            raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
             # Extract JSON substring if wrapped in markdown code blocks
             if "```json" in raw_text:
                 raw_text = raw_text.split("```json")[1].split("```")[0].strip()
             elif "```" in raw_text:
                 raw_text = raw_text.split("```")[1].split("```")[0].strip()
+            raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
             return response_model.model_validate_json(raw_text)
 
         # OpenAI-compatible Provider (Ollama / Mufasa / OpenAI)
@@ -242,11 +242,14 @@ class LLMClient:
             else:
                 raise exc
 
+        import re
         raw_text = response.choices[0].message.content or "{}"
+        raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
         if "```json" in raw_text:
             raw_text = raw_text.split("```json")[1].split("```")[0].strip()
         elif "```" in raw_text:
             raw_text = raw_text.split("```")[1].split("```")[0].strip()
+        raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
 
         try:
             return response_model.model_validate_json(raw_text)
@@ -295,7 +298,7 @@ class LLMClient:
                 config_obj.system_instruction = system_prompt
             import time
             current_model = self.config.model
-            fallback_models = ["gemini-3.1-flash-lite", "gemini-3.8-flash"]
+            fallback_models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
             backoff = 3.0
             for attempt in range(4):
                 try:

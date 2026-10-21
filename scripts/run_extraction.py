@@ -25,6 +25,9 @@ def main():
     parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.1-flash-lite)")
     parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If set, runs dual-agent parallel consensus mode.")
+    parser.add_argument("--base-url", type=str, default=None, help="Base URL for OpenAI-compatible LLM endpoint")
+    parser.add_argument("--base-url-a", type=str, default=None, help="Base URL for Agent A LLM endpoint")
+    parser.add_argument("--base-url-b", type=str, default=None, help="Base URL for Agent B LLM endpoint")
     parser.add_argument("--api-key", type=str, default=None, help="API key (optional if set in environment or .env)")
     parser.add_argument("--evaluate", action="store_true", help="Compare extracted scores against database.sqlite ground truth")
     parser.add_argument(
@@ -81,11 +84,16 @@ def main():
     provider_b = args.provider_b or provider_a
     model_b = args.model_b
     is_dual = model_b is not None
+    base_url_a = args.base_url_a or args.base_url
+    base_url_b = args.base_url_b or args.base_url
 
-    if (provider_a != "mock" and not api_key) or (is_dual and provider_b != "mock" and not api_key):
+    local_providers = ("mock", "mufasa", "ollama")
+    needs_key_a = provider_a not in local_providers
+    needs_key_b = is_dual and (provider_b not in local_providers)
+    if (needs_key_a or needs_key_b) and not api_key:
         print("\n" + "=" * 70)
         print("⚠️  MISSING API KEY")
-        print("To run live extraction, you need a free Google Gemini API key.")
+        print("To run live extraction with an external provider, you need an API key.")
         print("1. Get a free key (0.00 €, no credit card needed) at: https://aistudio.google.com/app/apikey")
         print("2. Set it in your terminal:")
         print("   export GEMINI_API_KEY=\"AIzaSy...\"")
@@ -106,14 +114,14 @@ def main():
         db = DatabaseManager(DEFAULT_DB_PATH)
         auditor = AuditorAgent(db_manager=db)
 
-        client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, api_key=api_key))
+        client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, api_key=api_key, base_url=base_url_a))
         agent_a = ExtractionAgent(llm_client=client_a)
-        client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, api_key=api_key))
+        client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, api_key=api_key, base_url=base_url_b))
         agent_b = ExtractionAgent(llm_client=client_b)
         coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
         print(f"🤖 Invoking DualExtractionCoordinator in parallel:")
-        print(f"   • Agent A: {provider_a} ({model_a})")
-        print(f"   • Agent B: {provider_b} ({model_b})")
+        print(f"   • Agent A: {provider_a} ({model_a}) -> {base_url_a or 'default'}")
+        print(f"   • Agent B: {provider_b} ({model_b}) -> {base_url_b or 'default'}")
         if args.max_rounds > 1:
             extracted_data_a, extracted_data_b, audit_report, deliberation_trajectory = coordinator.extract_manuscript_with_deliberation(
                 manuscript=manuscript,
@@ -136,6 +144,7 @@ def main():
             provider=provider_a,
             model=model_a,
             api_key=api_key,
+            base_url=base_url_a,
         )
         llm_client = LLMClient(config=llm_config)
         agent = ExtractionAgent(llm_client=llm_client)

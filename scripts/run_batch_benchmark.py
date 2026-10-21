@@ -44,6 +44,9 @@ def main():
     parser.add_argument("--model-a", type=str, default=None, help="LLM model name for Agent A (default: --model or gemini-3.1-flash-lite)")
     parser.add_argument("--provider-b", type=str, default=None, help="LLM provider for Agent B: gemini, ollama, mufasa, or mock")
     parser.add_argument("--model-b", type=str, default=None, help="LLM model name for Agent B. If specified, enables dual-agent parallel consensus mode.")
+    parser.add_argument("--base-url", type=str, default=None, help="Base URL for OpenAI-compatible LLM endpoint")
+    parser.add_argument("--base-url-a", type=str, default=None, help="Base URL for Agent A LLM endpoint")
+    parser.add_argument("--base-url-b", type=str, default=None, help="Base URL for Agent B LLM endpoint")
     parser.add_argument(
         "--compare-source",
         type=str,
@@ -99,6 +102,8 @@ def main():
     provider_b = args.provider_b or provider_a
     model_b = args.model_b
     is_dual = model_b is not None
+    base_url_a = args.base_url_a or args.base_url
+    base_url_b = args.base_url_b or args.base_url
 
     tag = args.tag or (f"dual_{provider_a}_{provider_b}" if is_dual else f"single_{provider_a}")
     base_runs_dir = Path(args.output_dir) if args.output_dir != "logs" else None
@@ -112,8 +117,10 @@ def main():
         metadata={
             "provider_a": provider_a,
             "model_a": model_a,
+            "base_url_a": base_url_a,
             "provider_b": provider_b if is_dual else None,
             "model_b": model_b if is_dual else None,
+            "base_url_b": base_url_b if is_dual else None,
             "compare_source": args.compare_source,
             "audit_ground_truth": args.audit_ground_truth,
             "max_rounds": args.max_rounds,
@@ -173,9 +180,9 @@ def main():
 
         if is_dual:
             from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
-            client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a))
+            client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, base_url=base_url_a))
             agent_a = ExtractionAgent(llm_client=client_a)
-            client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b))
+            client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, base_url=base_url_b))
             agent_b = ExtractionAgent(llm_client=client_b)
             coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
         else:
@@ -184,6 +191,8 @@ def main():
                 config_kwargs["provider"] = provider_a
             if model_a:
                 config_kwargs["model"] = model_a
+            if base_url_a:
+                config_kwargs["base_url"] = base_url_a
             llm_config = LLMConfig(**config_kwargs)
             llm_client = LLMClient(config=llm_config)
             agent = ExtractionAgent(llm_client=llm_client)
