@@ -230,7 +230,7 @@ def main():
                         if cs.resolved_score is not None:
                             reconciled_scores.append(
                                 RawExtractedScore(
-                                    dataset_name=cs.canonical_dataset_name,
+                                    dataset_name=cs.canonical_dataset_name or cs.dataset_name or "Unknown",
                                     organ_or_task=cs.organ_or_task or "Overall",
                                     dice_score=cs.resolved_score,
                                     prompt_type=cs.prompt_type,

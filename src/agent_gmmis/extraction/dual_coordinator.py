@@ -21,13 +21,14 @@ from agent_gmmis.extraction.schemas import (
 
 def _find_matching_score_index(
     scores: List[RawExtractedScore],
-    dataset_name: str,
+    dataset_name: Optional[str],
     organ_or_task: Optional[str] = None,
     alias_resolver: Optional[DatasetAliasResolver] = None,
 ) -> Optional[int]:
     """Finds the index of the RawExtractedScore corresponding to dataset_name and organ_or_task."""
-    norm_ds = dataset_name.lower().strip()
-    canon_target = (alias_resolver.resolve(dataset_name) if alias_resolver else dataset_name).lower().strip()
+    norm_ds = (dataset_name or "").lower().strip()
+    resolved_target = alias_resolver.resolve(dataset_name) if (alias_resolver and dataset_name) else None
+    canon_target = (resolved_target or dataset_name or "").lower().strip()
     norm_organ = (organ_or_task or "").lower().strip()
 
     best_idx = None
@@ -36,10 +37,11 @@ def _find_matching_score_index(
     for idx, s in enumerate(scores):
         if s.is_baseline_comparison:
             continue
-        s_ds = s.dataset_name.lower().strip()
-        s_canon = (alias_resolver.resolve(s.dataset_name) if alias_resolver else s.dataset_name).lower().strip()
+        s_ds = (s.dataset_name or "").lower().strip()
+        s_resolved = alias_resolver.resolve(s.dataset_name) if (alias_resolver and s.dataset_name) else None
+        s_canon = (s_resolved or s.dataset_name or "").lower().strip()
 
-        ds_match = (s_ds == norm_ds) or (s_canon == canon_target)
+        ds_match = (bool(s_ds) and s_ds == norm_ds) or (bool(s_canon) and s_canon == canon_target)
         if not ds_match:
             continue
 
@@ -181,20 +183,31 @@ class DualExtractionCoordinator:
 
             round_details: List[str] = []
             queries_to_run: List[Tuple[str, str, Any]] = []
+            seen_queries: Set[Tuple[str, str]] = set()
 
             # Identify items to re-interrogate
             for cs in audit_report.consensus_scores:
+                canon_ds = cs.canonical_dataset_name or cs.dataset_name or "Unknown"
                 if cs.status == ConsensusStatus.DISPUTED:
-                    # Query both agents blindly on discrepancy
-                    queries_to_run.append(("dispute_a", cs.canonical_dataset_name, cs))
-                    queries_to_run.append(("dispute_b", cs.canonical_dataset_name, cs))
+                    # Query both agents blindly on discrepancy, distinguishing by organ/task
+                    item_key = f"{canon_ds}::{cs.organ_or_task or 'Overall'}"
+                    if ("dispute_a", item_key) not in seen_queries:
+                        queries_to_run.append(("dispute_a", item_key, cs))
+                        seen_queries.add(("dispute_a", item_key))
+                    if ("dispute_b", item_key) not in seen_queries:
+                        queries_to_run.append(("dispute_b", item_key, cs))
+                        seen_queries.add(("dispute_b", item_key))
                 elif cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED:
                     if cs.score_a is not None and cs.score_b is None:
-                        # Agent B omitted
-                        queries_to_run.append(("omission_b", cs.canonical_dataset_name, cs))
+                        # Agent B omitted - query once per omitted dataset
+                        if ("omission_b", canon_ds) not in seen_queries:
+                            queries_to_run.append(("omission_b", canon_ds, cs))
+                            seen_queries.add(("omission_b", canon_ds))
                     elif cs.score_b is not None and cs.score_a is None:
-                        # Agent A omitted
-                        queries_to_run.append(("omission_a", cs.canonical_dataset_name, cs))
+                        # Agent A omitted - query once per omitted dataset
+                        if ("omission_a", canon_ds) not in seen_queries:
+                            queries_to_run.append(("omission_a", canon_ds, cs))
+                            seen_queries.add(("omission_a", canon_ds))
 
             # Execute re-interrogations concurrently
             results: Dict[Tuple[str, str], ReinterrogationScoreResponse] = {}
@@ -255,8 +268,10 @@ class DualExtractionCoordinator:
             # Apply responses to ExtractedPaperData
             # 1. Agent A Discrepancies
             for cs in audit_report.consensus_scores:
-                if cs.status == ConsensusStatus.DISPUTED and ("dispute_a", cs.canonical_dataset_name) in results:
-                    resp_a = results[("dispute_a", cs.canonical_dataset_name)]
+                canon_ds = cs.canonical_dataset_name or cs.dataset_name or "Unknown"
+                item_key = f"{canon_ds}::{cs.organ_or_task or 'Overall'}"
+                if cs.status == ConsensusStatus.DISPUTED and ("dispute_a", item_key) in results:
+                    resp_a = results[("dispute_a", item_key)]
                     idx_a = _find_matching_score_index(
                         extracted_a.extracted_scores,
                         cs.dataset_name,
@@ -266,7 +281,7 @@ class DualExtractionCoordinator:
                     if idx_a is not None:
                         if not resp_a.is_valid_benchmark:
                             removed = extracted_a.extracted_scores.pop(idx_a)
-                            round_details.append(f"Agent A excluded {cs.canonical_dataset_name} ({resp_a.exclusion_reason or resp_a.rationale})")
+                            round_details.append(f"Agent A excluded {item_key} ({resp_a.exclusion_reason or resp_a.rationale})")
                         else:
                             curr_score = extracted_a.extracted_scores[idx_a].dice_score
                             if resp_a.dice_score != curr_score:
@@ -274,13 +289,13 @@ class DualExtractionCoordinator:
                                 extracted_a.extracted_scores[idx_a].notes = resp_a.rationale
                                 if resp_a.prompt_type:
                                     extracted_a.extracted_scores[idx_a].prompt_type = resp_a.prompt_type
-                                round_details.append(f"Agent A updated {cs.canonical_dataset_name} {curr_score} -> {resp_a.dice_score} ({resp_a.rationale})")
+                                round_details.append(f"Agent A updated {item_key} {curr_score} -> {resp_a.dice_score} ({resp_a.rationale})")
                             else:
-                                round_details.append(f"Agent A maintained {cs.canonical_dataset_name} at {curr_score}")
+                                round_details.append(f"Agent A maintained {item_key} at {curr_score}")
 
                 # 2. Agent B Discrepancies
-                if cs.status == ConsensusStatus.DISPUTED and ("dispute_b", cs.canonical_dataset_name) in results:
-                    resp_b = results[("dispute_b", cs.canonical_dataset_name)]
+                if cs.status == ConsensusStatus.DISPUTED and ("dispute_b", item_key) in results:
+                    resp_b = results[("dispute_b", item_key)]
                     idx_b = _find_matching_score_index(
                         extracted_b.extracted_scores,
                         cs.dataset_name,
@@ -290,7 +305,7 @@ class DualExtractionCoordinator:
                     if idx_b is not None:
                         if not resp_b.is_valid_benchmark:
                             removed = extracted_b.extracted_scores.pop(idx_b)
-                            round_details.append(f"Agent B excluded {cs.canonical_dataset_name} ({resp_b.exclusion_reason or resp_b.rationale})")
+                            round_details.append(f"Agent B excluded {item_key} ({resp_b.exclusion_reason or resp_b.rationale})")
                         else:
                             curr_score = extracted_b.extracted_scores[idx_b].dice_score
                             if resp_b.dice_score != curr_score:
@@ -298,45 +313,56 @@ class DualExtractionCoordinator:
                                 extracted_b.extracted_scores[idx_b].notes = resp_b.rationale
                                 if resp_b.prompt_type:
                                     extracted_b.extracted_scores[idx_b].prompt_type = resp_b.prompt_type
-                                round_details.append(f"Agent B updated {cs.canonical_dataset_name} {curr_score} -> {resp_b.dice_score} ({resp_b.rationale})")
+                                round_details.append(f"Agent B updated {item_key} {curr_score} -> {resp_b.dice_score} ({resp_b.rationale})")
                             else:
-                                round_details.append(f"Agent B maintained {cs.canonical_dataset_name} at {curr_score}")
+                                round_details.append(f"Agent B maintained {item_key} at {curr_score}")
+
+            # Track handled omissions to avoid duplicate score additions
+            handled_omissions_a: Set[str] = set()
+            handled_omissions_b: Set[str] = set()
+
+            for cs in audit_report.consensus_scores:
+                canon_ds = cs.canonical_dataset_name or cs.dataset_name or "Unknown"
 
                 # 3. Agent A Omissions
-                if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED and cs.score_a is None and ("omission_a", cs.canonical_dataset_name) in results:
-                    resp_a = results[("omission_a", cs.canonical_dataset_name)]
-                    if resp_a.is_valid_benchmark and resp_a.dice_score is not None:
-                        extracted_a.extracted_scores.append(
-                            RawExtractedScore(
-                                dataset_name=cs.dataset_name,
-                                organ_or_task=resp_a.organ_or_task or cs.organ_or_task or "Overall",
-                                dice_score=resp_a.dice_score,
-                                prompt_type=resp_a.prompt_type or cs.prompt_type,
-                                table_or_section_ref=resp_a.table_or_section_ref,
-                                notes=f"Recovered during deliberation round {round_num}: {resp_a.rationale}",
+                if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED and cs.score_a is None and ("omission_a", canon_ds) in results:
+                    if canon_ds not in handled_omissions_a:
+                        handled_omissions_a.add(canon_ds)
+                        resp_a = results[("omission_a", canon_ds)]
+                        if resp_a.is_valid_benchmark and resp_a.dice_score is not None:
+                            extracted_a.extracted_scores.append(
+                                RawExtractedScore(
+                                    dataset_name=cs.dataset_name,
+                                    organ_or_task=resp_a.organ_or_task or cs.organ_or_task or "Overall",
+                                    dice_score=resp_a.dice_score,
+                                    prompt_type=resp_a.prompt_type or cs.prompt_type,
+                                    table_or_section_ref=resp_a.table_or_section_ref,
+                                    notes=f"Recovered during deliberation round {round_num}: {resp_a.rationale}",
+                                )
                             )
-                        )
-                        round_details.append(f"Agent A confirmed omitted {cs.canonical_dataset_name} with score {resp_a.dice_score}")
-                    else:
-                        round_details.append(f"Agent A verified exclusion of {cs.canonical_dataset_name}: {resp_a.exclusion_reason or resp_a.rationale}")
+                            round_details.append(f"Agent A confirmed omitted {canon_ds} with score {resp_a.dice_score}")
+                        else:
+                            round_details.append(f"Agent A verified exclusion of {canon_ds}: {resp_a.exclusion_reason or resp_a.rationale}")
 
                 # 4. Agent B Omissions
-                if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED and cs.score_b is None and ("omission_b", cs.canonical_dataset_name) in results:
-                    resp_b = results[("omission_b", cs.canonical_dataset_name)]
-                    if resp_b.is_valid_benchmark and resp_b.dice_score is not None:
-                        extracted_b.extracted_scores.append(
-                            RawExtractedScore(
-                                dataset_name=cs.dataset_name,
-                                organ_or_task=resp_b.organ_or_task or cs.organ_or_task or "Overall",
-                                dice_score=resp_b.dice_score,
-                                prompt_type=resp_b.prompt_type or cs.prompt_type,
-                                table_or_section_ref=resp_b.table_or_section_ref,
-                                notes=f"Recovered during deliberation round {round_num}: {resp_b.rationale}",
+                if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED and cs.score_b is None and ("omission_b", canon_ds) in results:
+                    if canon_ds not in handled_omissions_b:
+                        handled_omissions_b.add(canon_ds)
+                        resp_b = results[("omission_b", canon_ds)]
+                        if resp_b.is_valid_benchmark and resp_b.dice_score is not None:
+                            extracted_b.extracted_scores.append(
+                                RawExtractedScore(
+                                    dataset_name=cs.dataset_name,
+                                    organ_or_task=resp_b.organ_or_task or cs.organ_or_task or "Overall",
+                                    dice_score=resp_b.dice_score,
+                                    prompt_type=resp_b.prompt_type or cs.prompt_type,
+                                    table_or_section_ref=resp_b.table_or_section_ref,
+                                    notes=f"Recovered during deliberation round {round_num}: {resp_b.rationale}",
+                                )
                             )
-                        )
-                        round_details.append(f"Agent B confirmed omitted {cs.canonical_dataset_name} with score {resp_b.dice_score}")
-                    else:
-                        round_details.append(f"Agent B verified exclusion of {cs.canonical_dataset_name}: {resp_b.exclusion_reason or resp_b.rationale}")
+                            round_details.append(f"Agent B confirmed omitted {canon_ds} with score {resp_b.dice_score}")
+                        else:
+                            round_details.append(f"Agent B verified exclusion of {canon_ds}: {resp_b.exclusion_reason or resp_b.rationale}")
 
             # Re-evaluate consensus with updated extractions
             new_report = auditor.audit_consensus(

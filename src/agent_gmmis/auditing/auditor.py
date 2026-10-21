@@ -321,7 +321,8 @@ class AuditorAgent:
         proposed_scores_by_condition: Dict[Tuple[str, str, str, str, str], List[float]] = {}
         for s in extracted.extracted_scores:
             if not s.is_baseline_comparison and s.dice_score is not None:
-                canon_d = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name.strip()
+                resolved_d = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+                canon_d = (resolved_d or s.dataset_name or "Unknown").strip()
                 organ = (s.organ_or_task or "").strip().lower()
                 prompt = (s.prompt_type or "default").strip().lower()
                 table_ref = (s.table_or_section_ref or "").strip().lower()
@@ -365,7 +366,8 @@ class AuditorAgent:
         scores_by_val: Dict[float, Set[Tuple[str, str]]] = {}
         for s in manuscript_scores:
             val = round(s.dice_score, 4)
-            d_canon = (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name).strip().lower()
+            resolved_d = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+            d_canon = (resolved_d or s.dataset_name or "Unknown").strip().lower()
             task = (s.organ_or_task or "").strip().lower()
             scores_by_val.setdefault(val, set()).add((d_canon, task))
 
@@ -742,13 +744,15 @@ class AuditorAgent:
         scores_a_by_canon: Dict[str, List[RawExtractedScore]] = {}
         for s in extracted_a.extracted_scores:
             if not s.is_baseline_comparison:
-                canon = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name.strip()
+                resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+                canon = (resolved or s.dataset_name or "Unknown").strip()
                 scores_a_by_canon.setdefault(canon.lower(), []).append(s)
 
         scores_b_by_canon: Dict[str, List[RawExtractedScore]] = {}
         for s in extracted_b.extracted_scores:
             if not s.is_baseline_comparison:
-                canon = self.alias_resolver.resolve(s.dataset_name) or s.dataset_name.strip()
+                resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+                canon = (resolved or s.dataset_name or "Unknown").strip()
                 scores_b_by_canon.setdefault(canon.lower(), []).append(s)
 
         all_canon_keys = sorted(list(set(scores_a_by_canon.keys()) | set(scores_b_by_canon.keys())))
@@ -760,10 +764,11 @@ class AuditorAgent:
 
             if list_a and not list_b:
                 for s_a in list_a:
+                    canon_a = (self.alias_resolver.resolve(s_a.dataset_name) if s_a.dataset_name else None) or s_a.dataset_name or "Unknown"
                     consensus_scores.append(
                         ConsensusScore(
                             dataset_name=s_a.dataset_name,
-                            canonical_dataset_name=self.alias_resolver.resolve(s_a.dataset_name) or s_a.dataset_name,
+                            canonical_dataset_name=canon_a,
                             organ_or_task=s_a.organ_or_task,
                             status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
                             score_a=s_a.dice_score,
@@ -780,10 +785,11 @@ class AuditorAgent:
 
             if list_b and not list_a:
                 for s_b in list_b:
+                    canon_b = (self.alias_resolver.resolve(s_b.dataset_name) if s_b.dataset_name else None) or s_b.dataset_name or "Unknown"
                     consensus_scores.append(
                         ConsensusScore(
                             dataset_name=s_b.dataset_name,
-                            canonical_dataset_name=self.alias_resolver.resolve(s_b.dataset_name) or s_b.dataset_name,
+                            canonical_dataset_name=canon_b,
                             organ_or_task=s_b.organ_or_task,
                             status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
                             score_a=None,
@@ -801,7 +807,7 @@ class AuditorAgent:
             # Present in both -> match individual score rows
             matched_b_indices: Set[int] = set()
             for s_a in list_a:
-                canon_name = self.alias_resolver.resolve(s_a.dataset_name) or s_a.dataset_name
+                canon_name = (self.alias_resolver.resolve(s_a.dataset_name) if s_a.dataset_name else None) or s_a.dataset_name or "Unknown"
                 organ_a_norm = (s_a.organ_or_task or "").strip().lower()
                 prompt_a_norm = (s_a.prompt_type or "").strip().lower()
                 budget_a_norm = (s_a.data_budget_or_setting or "").strip().lower()
@@ -907,7 +913,7 @@ class AuditorAgent:
 
             for idx, s_b in enumerate(list_b):
                 if idx not in matched_b_indices:
-                    canon_name = self.alias_resolver.resolve(s_b.dataset_name) or s_b.dataset_name
+                    canon_name = (self.alias_resolver.resolve(s_b.dataset_name) if s_b.dataset_name else None) or s_b.dataset_name or "Unknown"
                     consensus_scores.append(
                         ConsensusScore(
                             dataset_name=s_b.dataset_name,

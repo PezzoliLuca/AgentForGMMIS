@@ -79,8 +79,10 @@ class ExtractionEvaluator:
         extracted_by_dataset: Dict[str, List[RawExtractedScore]] = {}
         for s in extracted.extracted_scores:
             if not s.is_baseline_comparison and s.dice_score is not None:
-                resolved = self.alias_resolver.resolve(s.dataset_name)
-                d_key = (resolved or s.dataset_name).strip()
+                resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+                d_key = (resolved or s.dataset_name or "").strip()
+                if not d_key:
+                    continue
                 extracted_by_dataset.setdefault(d_key, []).append(s)
 
         # Prepare GT scores (normalized canonical dataset names)
@@ -109,7 +111,7 @@ class ExtractionEvaluator:
         for d_name, scores_list in extracted_by_dataset.items():
             # Check direct or word-boundary match against GT
             match_gt_key = None
-            d_clean = d_name.lower().strip()
+            d_clean = (d_name or "").lower().strip()
             for gt_k in gt_map.keys():
                 gt_clean = gt_k.lower().strip()
                 if d_clean == gt_clean:
