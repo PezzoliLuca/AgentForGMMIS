@@ -34,6 +34,24 @@ def main():
         choices=["primary", "best"],
         help="Ground truth benchmark to compare against: 'primary' (paper's own report) or 'best' (subsequent literature best)",
     )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory where intermediate extraction logs and artifacts will be saved (default: logs/runs/<timestamp>_single_<model_id>/)",
+    )
+    parser.add_argument(
+        "--tag",
+        type=str,
+        default=None,
+        help="Optional tag for the run directory name",
+    )
+    parser.add_argument(
+        "--no-save-logs",
+        action="store_true",
+        default=False,
+        help="Disable automatic persistence of intermediate extraction logs to disk",
+    )
     args = parser.parse_args()
 
     fetcher = PaperFetcher()
@@ -304,6 +322,49 @@ def main():
                 print(tabulate(comp_table, headers=["Dataset", "Prompt Setting", "Extracted", f"GT ({args.compare_source.capitalize()})", "Diff (Absolute)"], tablefmt="github"))
         else:
             print(f"Notice: Model '{extracted_data.proposed_model_id}' is not yet in database.sqlite (new discovery!).")
+
+    # -------------------------------------------------------------
+    # Step 3.3: Persist Intermediate Agent Artifacts
+    # -------------------------------------------------------------
+    if not args.no_save_logs:
+        from agent_gmmis.extraction.run_logger import RunLogger
+        model_tag = extracted_data.proposed_model_id or pdf_file.stem
+        tag = args.tag or f"single_{model_tag}"
+        run_logger = RunLogger(
+            base_dir=Path(args.output_dir) if args.output_dir else None,
+            tag=tag,
+            is_dual=is_dual,
+            capture_stdout=False,
+            metadata={
+                "pdf_name": pdf_file.name,
+                "provider_a": provider_a,
+                "model_a": model_a,
+                "provider_b": provider_b if is_dual else None,
+                "model_b": model_b if is_dual else None,
+                "compare_source": args.compare_source,
+            },
+        )
+        paper_dir = run_logger.log_paper_extraction(
+            model_id=extracted_data.proposed_model_id or pdf_file.stem,
+            extracted_a=extracted_data_a if is_dual else extracted_data,
+            extracted_b=extracted_data_b if is_dual else None,
+            audit_report=audit_report,
+            final_extracted=extracted_data,
+            eval_report=report if (args.evaluate or gt_model) and 'report' in locals() else None,
+            repo_inspector_result=repo_inspector if 'reaudited_report' in locals() and reaudited_report else None,
+        )
+        print("\n" + "=" * 70)
+        print("📁 INTERMEDIATE ARTIFACTS & LOGS PERSISTED")
+        print("=" * 70)
+        print(f"Directory: {paper_dir}")
+        print(f"• Agent A:       {paper_dir / 'agent_a_extracted.json'}")
+        if is_dual:
+            print(f"• Agent B:       {paper_dir / 'agent_b_extracted.json'}")
+            print(f"• Consensus:     {paper_dir / 'consensus_matrix.json'}")
+        print(f"• Audit Report:  {paper_dir / 'audit_report.json'}")
+        print(f"• Reconciled:    {paper_dir / 'final_reconciled.json'}")
+        if (args.evaluate or gt_model) and 'report' in locals():
+            print(f"• Evaluation:    {paper_dir / 'evaluation.json'}")
 
     print("\n✅ Extraction and validation workflow completed.\n")
 

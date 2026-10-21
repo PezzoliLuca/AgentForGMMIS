@@ -15,32 +15,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from tabulate import tabulate
 
-from agent_gmmis.config import DEFAULT_DB_PATH
+from agent_gmmis.config import DEFAULT_DB_PATH, LOGS_DIR
 from agent_gmmis.data.db_manager import DatabaseManager
 from agent_gmmis.extraction.evaluator import ExtractionEvaluator
 from agent_gmmis.extraction.extractor import ExtractionAgent
 from agent_gmmis.extraction.paper_fetcher import PaperFetcher
+from agent_gmmis.extraction.run_logger import RunLogger, archive_legacy_flat_logs
 from agent_gmmis.llm.client import LLMClient, LLMConfig
-
-
-class LoggerTee:
-    """Duplicates stdout to both terminal and a log file."""
-
-    def __init__(self, filepath: Path):
-        self.terminal = sys.stdout
-        self.log_file = open(filepath, "w", encoding="utf-8")
-
-    def write(self, message):
-        self.terminal.write(message)
-        self.log_file.write(message)
-        self.log_file.flush()
-
-    def flush(self):
-        self.terminal.flush()
-        self.log_file.flush()
-
-    def close(self):
-        self.log_file.close()
 
 
 def main():
@@ -77,24 +58,60 @@ def main():
         help="Directory where logs and markdown reports will be saved (default: logs)",
     )
     parser.add_argument(
+        "--tag",
+        type=str,
+        default=None,
+        help="Optional tag for the run directory name (e.g. mufasa_dual_20)",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Optional exact custom name for the run directory",
+    )
+    parser.add_argument(
         "--audit-ground-truth",
         action="store_true",
         default=False,
         help="If set, AuditorAgent cross-checks extracted values against human survey ground truth in SQLite (benchmark mode). Default: False (autonomous deploy mode).",
     )
+    parser.add_argument(
+        "--archive-legacy",
+        action="store_true",
+        default=False,
+        help="Move older loose flat files in logs/ to logs/archive/legacy_flat_logs/",
+    )
     args = parser.parse_args()
 
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.archive_legacy:
+        archived_count = archive_legacy_flat_logs()
+        if archived_count > 0:
+            print(f"📦 Archived {archived_count} legacy flat log files to logs/archive/legacy_flat_logs/")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = out_dir / f"batch_benchmark_{timestamp}.log"
-    report_path = out_dir / f"batch_benchmark_report_{timestamp}.md"
-    latest_report_path = out_dir / "latest_batch_benchmark.md"
+    provider_a = args.provider_a or args.provider or "gemini"
+    model_a = args.model_a or args.model or "gemini-3.1-flash-lite"
+    provider_b = args.provider_b or provider_a
+    model_b = args.model_b
+    is_dual = model_b is not None
 
-    # Set up dual logging to console and file
-    tee = LoggerTee(log_path)
-    sys.stdout = tee
+    tag = args.tag or (f"dual_{provider_a}_{provider_b}" if is_dual else f"single_{provider_a}")
+    base_runs_dir = Path(args.output_dir) if args.output_dir != "logs" else None
+
+    run_logger = RunLogger(
+        base_dir=base_runs_dir,
+        run_name=args.run_name,
+        tag=tag,
+        is_dual=is_dual,
+        capture_stdout=True,
+        metadata={
+            "provider_a": provider_a,
+            "model_a": model_a,
+            "provider_b": provider_b if is_dual else None,
+            "model_b": model_b if is_dual else None,
+            "compare_source": args.compare_source,
+            "audit_ground_truth": args.audit_ground_truth,
+        },
+    )
 
     try:
         db = DatabaseManager(DEFAULT_DB_PATH)
@@ -115,15 +132,10 @@ def main():
                         if len(target_model_ids) >= args.count:
                             break
 
-        provider_a = args.provider_a or args.provider or "gemini"
-        model_a = args.model_a or args.model or "gemini-3.1-flash-lite"
-        provider_b = args.provider_b or provider_a
-        model_b = args.model_b
-        is_dual = model_b is not None
-
         start_time_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("\n" + "=" * 80)
         print("🔬 AGENT FOR GMMIS — BATCH EXTRACTION BENCHMARK")
+        print(f"Run ID:          {run_logger.run_id}")
         print(f"Timestamp:       {start_time_iso}")
         print(f"Papers to Test:  {len(target_model_ids)}")
         print(f"Target Models:   {', '.join(target_model_ids)}")
@@ -135,7 +147,8 @@ def main():
             print(f"Pipeline Mode:   Single-Agent Extraction")
             print(f"LLM Provider:    {provider_a} ({model_a})")
         print(f"Ground Truth:    {args.compare_source.upper()} literature records")
-        print(f"Log File:        {log_path}")
+        print(f"Run Directory:   {run_logger.run_dir}")
+        print(f"Execution Log:   {run_logger.log_file}")
         print("=" * 80)
 
         evaluator = ExtractionEvaluator(db_manager=db)
@@ -209,6 +222,8 @@ def main():
                     )
                 else:
                     extracted = agent.process_manuscript(manuscript)
+                    extracted_a = extracted
+                    extracted_b = None
                     audit_report = auditor.audit(extracted, manuscript=manuscript, benchmark_mode=args.audit_ground_truth)
 
                 # Delegation Layer: GitHub Repository Inspector
@@ -235,6 +250,19 @@ def main():
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 
+                # Persist intermediate agent extractions and consensus matrix
+                paper_dir = run_logger.log_paper_extraction(
+                    model_id=model_id,
+                    extracted_a=extracted_a,
+                    extracted_b=extracted_b if is_dual else None,
+                    audit_report=audit_report,
+                    final_extracted=extracted,
+                    eval_report=report,
+                    repo_inspector_result=repo_inspector if repo_recovered else None,
+                    outreach_draft=outreach_draft,
+                    elapsed_seconds=elapsed,
+                )
+
                 dice_mae_str = f"{report.dice_mae:.4f}" if report.dice_mae is not None else "N/A"
                 if outreach_draft:
                     audit_status_badge = "✉️ OUTREACH DRAFTED"
@@ -259,11 +287,14 @@ def main():
                     "model_id": model_id,
                     "report": report,
                     "extracted": extracted,
+                    "extracted_a": extracted_a,
+                    "extracted_b": extracted_b if is_dual else None,
                     "audit_report": audit_report,
                     "elapsed": elapsed,
                     "pdf_name": pdf_path.name,
                     "repo_recovered": repo_recovered,
                     "outreach_draft": outreach_draft,
+                    "paper_dir": paper_dir,
                 })
 
                 audit_notes = []
@@ -289,6 +320,7 @@ def main():
                 notes_str = f" — Audit: [{', '.join(audit_notes)}]" if audit_notes else ""
 
                 print(f"   ✅ Done in {elapsed:.1f}s — Audit: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%) — Scores: {len(extracted.extracted_scores)}, Matched: {report.matched_datasets_count}/{report.ground_truth_datasets_count}, Dice MAE: {dice_mae_str}{notes_str}")
+                print(f"   📂 Artifacts saved to: {paper_dir.relative_to(run_logger.run_dir)}")
 
             except Exception as e:
                 elapsed = time.time() - t0
@@ -387,6 +419,7 @@ def main():
                 "auditor_mode": auditor_mode_desc,
                 "compare_source": args.compare_source,
                 "total_papers": len(target_model_ids),
+                "run_id": run_logger.run_id,
             },
             "summary": [
                 {
@@ -432,6 +465,8 @@ def main():
             md_lines.append(f"- **Visual Backbone**: {ext.visual_backbone or 'N/A'}")
             md_lines.append(f"- **Repository URL**: {ext.code_repository_url or 'N/A'}")
             md_lines.append(f"- **Execution Time**: {elap:.1f}s")
+            if "paper_dir" in item:
+                md_lines.append(f"- **Intermediate Artifacts**: `{item['paper_dir'].relative_to(run_logger.run_dir)}/`")
             if ar:
                 md_lines.append(f"- **Audit Status**: `{ar.status.value.upper()}` (Confidence: {ar.confidence_score*100:.1f}%)")
                 if ar.anomalies:
@@ -458,7 +493,10 @@ def main():
                     md_lines.append(f"*(Extracted scores from: {datasets_seen})*")
             md_lines.append("")
 
-            json_results["papers"].append({
+            ext_a = item.get("extracted_a")
+            ext_b = item.get("extracted_b")
+
+            paper_entry = {
                 "model_id": mid,
                 "paper_title": ext.paper_title,
                 "pdf_name": item["pdf_name"],
@@ -478,31 +516,80 @@ def main():
                 "dataset_recall": rep.dataset_recall,
                 "dice_mae": rep.dice_mae,
                 "score_comparisons": rep.score_comparisons,
-            })
+                "extractions_dir": str(item["paper_dir"].relative_to(run_logger.run_dir)) if "paper_dir" in item else None,
+                "is_dual": is_dual,
+                "agent_a": {
+                    "model_id": ext_a.proposed_model_id,
+                    "visual_backbone": ext_a.visual_backbone,
+                    "millions_of_parameters": ext_a.millions_of_parameters,
+                    "code_repository_url": ext_a.code_repository_url,
+                    "extracted_scores_count": len(ext_a.extracted_scores),
+                    "scores": [
+                        {
+                            "dataset": s.dataset_name,
+                            "organ": s.organ_or_task,
+                            "dice": s.dice_score,
+                            "prompt": s.prompt_type,
+                            "table_ref": s.table_or_section_ref,
+                            "is_baseline": s.is_baseline_comparison,
+                        }
+                        for s in ext_a.extracted_scores
+                    ],
+                } if ext_a else None,
+                "agent_b": {
+                    "model_id": ext_b.proposed_model_id,
+                    "visual_backbone": ext_b.visual_backbone,
+                    "millions_of_parameters": ext_b.millions_of_parameters,
+                    "code_repository_url": ext_b.code_repository_url,
+                    "extracted_scores_count": len(ext_b.extracted_scores),
+                    "scores": [
+                        {
+                            "dataset": s.dataset_name,
+                            "organ": s.organ_or_task,
+                            "dice": s.dice_score,
+                            "prompt": s.prompt_type,
+                            "table_ref": s.table_or_section_ref,
+                            "is_baseline": s.is_baseline_comparison,
+                        }
+                        for s in ext_b.extracted_scores
+                    ],
+                } if is_dual and ext_b else None,
+                "consensus": {
+                    "concordance_rate": ar.concordance_rate,
+                    "inter_model_dice_mae": ar.inter_model_dice_mae,
+                    "concordant_count": ar.concordant_count,
+                    "dispute_count": ar.dispute_count,
+                    "unconfirmed_count": ar.unconfirmed_count,
+                    "scores": [
+                        {
+                            "dataset": cs.canonical_dataset_name,
+                            "organ": cs.organ_or_task,
+                            "score_a": cs.score_a,
+                            "score_b": cs.score_b,
+                            "delta": cs.delta,
+                            "status": cs.status.value,
+                            "resolved_score": cs.resolved_score,
+                        }
+                        for cs in ar.consensus_scores
+                    ],
+                } if is_dual and ar and hasattr(ar, "consensus_scores") else None,
+            }
+            json_results["papers"].append(paper_entry)
 
         report_content = "\n".join(md_lines)
-        with open(report_path, "w", encoding="utf-8") as f:
-            f.write(report_content)
-        with open(latest_report_path, "w", encoding="utf-8") as f:
-            f.write(report_content)
-
-        json_path = out_dir / f"batch_benchmark_results_{timestamp}.json"
-        latest_json_path = out_dir / "latest_batch_benchmark.json"
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump(json_results, f, indent=2)
-        with open(latest_json_path, "w", encoding="utf-8") as f:
-            json.dump(json_results, f, indent=2)
+        run_logger.save_run_results(json_results, report_content)
 
         print("\n" + "=" * 80)
-        print(f"📄 Detailed Markdown report saved to: {report_path}")
-        print(f"📄 Latest report available at:        {latest_report_path}")
-        print(f"📊 Structured JSON results saved to:  {json_path}")
-        print(f"📝 Full execution log saved to:       {log_path}")
+        print(f"📁 Run Directory:            {run_logger.run_dir}")
+        print(f"📄 Detailed Markdown report: {run_logger.report_file}")
+        print(f"📊 Structured JSON results:  {run_logger.results_file}")
+        print(f"📂 Intermediate extractions: {run_logger.extractions_dir}")
+        print(f"📝 Full execution log:       {run_logger.log_file}")
+        print(f"🔗 Latest report pointer:    {LOGS_DIR / 'latest_batch_benchmark.md'}")
         print("=" * 80 + "\n")
 
     finally:
-        sys.stdout = tee.terminal
-        tee.close()
+        run_logger.close()
 
 
 if __name__ == "__main__":

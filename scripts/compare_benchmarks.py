@@ -17,16 +17,23 @@ from tabulate import tabulate
 def load_benchmark_data(path_or_dir: Path) -> Dict[str, Any]:
     """Loads benchmark JSON data from a file or from the latest file in a directory."""
     if path_or_dir.is_dir():
-        # Look for latest_batch_benchmark.json first
-        latest = path_or_dir / "latest_batch_benchmark.json"
-        if latest.exists():
-            with open(latest, "r", encoding="utf-8") as f:
-                return json.load(f)
+        # Check standard run outputs first
+        for name in ["benchmark_results.json", "latest_batch_benchmark.json"]:
+            cand = path_or_dir / name
+            if cand.exists():
+                with open(cand, "r", encoding="utf-8") as f:
+                    return json.load(f)
         # Search for any batch_benchmark_results_*.json
         json_files = sorted(path_or_dir.glob("batch_benchmark_results_*.json"))
         if json_files:
             with open(json_files[-1], "r", encoding="utf-8") as f:
                 return json.load(f)
+        # Search inside runs/ if user passed logs/ directory
+        runs_dir = path_or_dir / "runs"
+        if runs_dir.is_dir():
+            all_runs = sorted([d for d in runs_dir.iterdir() if d.is_dir()])
+            if all_runs:
+                return load_benchmark_data(all_runs[-1])
         raise FileNotFoundError(f"No benchmark JSON found in directory: {path_or_dir}")
     elif path_or_dir.exists():
         with open(path_or_dir, "r", encoding="utf-8") as f:
