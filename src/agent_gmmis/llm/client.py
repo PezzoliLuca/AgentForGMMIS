@@ -197,10 +197,17 @@ class LLMClient:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        # Calculate dynamic safe output token budget to ensure prompt + completion never exceeds 32k
+        # Calculate realistic output token budget for structured JSON response:
+        # ExtractedPaperData needs at most ~2200 tokens (even for 40+ benchmark rows)
+        # Reinterrogation responses need at most ~600 tokens.
+        # Requesting 8192 tokens artificially deprives the prompt of context in 16k/20k models.
+        resp_name = getattr(response_model, "__name__", "")
+        max_needed_output = 2200 if resp_name == "ExtractedPaperData" else 800
+
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
         approx_tokens = int(total_chars / 2.8) + 400
-        safe_max_tokens = min(8192, max(1024, 32768 - approx_tokens - 300))
+        context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
+        safe_max_tokens = min(max_needed_output, max(256, context_limit - approx_tokens - 200))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
         use_beta_parse = self.config.provider not in ("mufasa", "ollama")
@@ -234,16 +241,17 @@ class LLMClient:
                 max_tokens=safe_max_tokens,
             )
         except Exception as exc:
-            # Automatic recovery: if vLLM throws 400 context limit error, extract exact input_tokens and retry
+            # Automatic recovery: if vLLM throws 400 context limit error, dynamically adapt output tokens or trim
             err_str = str(exc)
-            if "maximum context length is" in err_str and "parameter=input_tokens" in err_str:
+            if "maximum context length is" in err_str:
                 import re
                 m_ctx = re.search(r"maximum context length is (\d+)", err_str)
-                m_inp = re.search(r"value=(\d+)", err_str)
-                if m_ctx and m_inp:
-                    ctx_len = int(m_ctx.group(1))
-                    inp_len = int(m_inp.group(1))
-                    retry_tokens = max(256, ctx_len - inp_len - 64)
+                m_inp = re.search(r"prompt contains at least (\d+)", err_str) or re.search(r"value=(\d+)", err_str)
+                ctx_len = int(m_ctx.group(1)) if m_ctx else 16384
+                inp_len = int(m_inp.group(1)) if m_inp else approx_tokens
+
+                if inp_len + 256 <= ctx_len:
+                    retry_tokens = max(256, min(2048, ctx_len - inp_len - 64))
                     response = self._openai_client.chat.completions.create(
                         model=self.config.model,
                         messages=augmented_messages,
@@ -252,7 +260,26 @@ class LLMClient:
                         max_tokens=retry_tokens,
                     )
                 else:
-                    raise exc
+                    # Trim middle of the prompt to fit within context length
+                    user_content = augmented_messages[-1]["content"]
+                    excess_chars = int((inp_len - (ctx_len - 1500)) * 3.5)
+                    if len(user_content) > excess_chars + 1000:
+                        mid = len(user_content) // 2
+                        half_trim = excess_chars // 2
+                        augmented_messages[-1]["content"] = (
+                            user_content[: mid - half_trim]
+                            + "\n\n[... middle text trimmed to respect context limit ...]\n\n"
+                            + user_content[mid + half_trim :]
+                        )
+                        response = self._openai_client.chat.completions.create(
+                            model=self.config.model,
+                            messages=augmented_messages,
+                            response_format={"type": "json_object"},
+                            temperature=self.config.temperature,
+                            max_tokens=1024,
+                        )
+                    else:
+                        raise exc
             else:
                 raise exc
 
