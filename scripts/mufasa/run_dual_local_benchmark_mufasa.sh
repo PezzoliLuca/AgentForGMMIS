@@ -1,7 +1,7 @@
 #!/bin/bash
 # ==============================================================================
 # MUFASA HPC — 100% On-Premise Dual-Agent Local Consensus Benchmark Job
-# Agent A: Qwen 2.5 14B Instruct AWQ (vLLM on port 8000)
+# Agent A: Qwen 2.5 7B Instruct AWQ (vLLM on port 8000)
 # Agent B: Meta Llama 3.1 8B Instruct AWQ (vLLM on port 8001)
 #
 # Runs entirely on local Mufasa A100 GPU (zero external API calls, no rate limits).
@@ -35,7 +35,7 @@ fi
 export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$CPATH"
 export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
 
-MODEL_A=${MODEL_A:-"Qwen/Qwen2.5-14B-Instruct-AWQ"}
+MODEL_A=${MODEL_A:-"Qwen/Qwen2.5-7B-Instruct-AWQ"}
 MODEL_B=${MODEL_B:-"hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"}
 PORT_A=8000
 PORT_B=8001
@@ -56,12 +56,12 @@ nvidia-smi
 
 export VLLM_USE_V1=0
 
-# 1. Start vLLM Server A (Qwen 14B AWQ)
+# 1. Start vLLM Server A (Qwen 7B AWQ)
 echo "Starting vLLM Server A on port $PORT_A for $MODEL_A..."
 vllm serve "$MODEL_A" \
     --port "$PORT_A" \
     --max-model-len 16384 \
-    --gpu-memory-utilization 0.54 \
+    --gpu-memory-utilization 0.43 \
     --enforce-eager \
     --trust-remote-code > "logs/vllm_server_a_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID_A=$!
@@ -95,7 +95,7 @@ echo "Starting vLLM Server B on port $PORT_B for $MODEL_B..."
 vllm serve "$MODEL_B" \
     --port "$PORT_B" \
     --max-model-len 16384 \
-    --gpu-memory-utilization 0.34 \
+    --gpu-memory-utilization 0.43 \
     --enforce-eager \
     --trust-remote-code > "logs/vllm_server_b_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID_B=$!
