@@ -25,7 +25,7 @@ Follow these strict extraction guidelines:
    - Identify the canonical dataset name and target organ/task. When a paper mentions challenge datasets under generic organ or modality labels, resolve them to their standard canonical challenge name if disclosed in the text (e.g. "Abdomen CT" / FLARE -> "FLARE", "Abdomen MR" / AMOS -> "AMOS", "Synapse" / Beyond the Cranial Vault -> "BTCV", "BraTS21" -> "BraTS", "ATLAS v2.0" -> "ATLAS v2.0", "Prost.MRI" / PROMISE12 -> "PROMISE12", "Fed-KiTS" -> "KiTS", "TotalSegmentator" -> "TotalSegmentator").
    - TABLE PRIORITIZATION (SOTA OVER ABLATIONS): Prioritize the primary comparative benchmark table (typically titled "Comparison with State-of-the-Art", "Main Results", or "Test Set Evaluation") over internal ablation study tables (e.g. hyperparameter tuning sweeps, feature ablations, or validation-only checks).
    - PEAK PERFORMANCE / MAXIMUM DSC TARGET: For each evaluated benchmark dataset, extract the HIGHEST (maximum achievable) Dice Similarity Coefficient (DSC) reported for the PROPOSED model across all tested prompt regimes or experimental settings (e.g. bounding box prompt, 5-point click, 1-point click, or fine-tuning regime). Record the prompt setting in `prompt_type` (e.g. "bounding box", "5 points", "1 point", "automated"), but ALWAYS select the peak (maximum) quantitative score achieved by the proposed model. Never select an inferior score (such as an under-prompted 1-point score) if the paper demonstrates higher valid performance with a box or multi-point prompt!
-   - MACRO-AVERAGE & MULTI-ORGAN SUMMARIES: When a table reports metrics for individual anatomical sub-structures (e.g. Enhancing Tumor, Tumor Core, Whole Tumor in BraTS) or multiple test splits and provides an "Average" or "Mean" summary column/row, ALWAYS extract the aggregated "Mean/Average" score with `organ_or_task='Overall'` or `'Mean'`, as literature surveys index the macro-average performance.
+   - MACRO-AVERAGE & MULTI-ORGAN SUMMARIES (MANDATORY FOR DATABASE INDEXING): The benchmark survey database indexes exactly ONE representative Macro-Average / Overall Mean Dice score per public benchmark dataset (e.g. BTCV, AMOS, FLARE, BraTS). If a table reports scores for individual anatomical sub-structures or organs (e.g. 13 organs in BTCV or WT/ET/TC in BraTS) and provides an 'Average' or 'Mean' column/row, you MUST extract that aggregated 'Average/Mean' score with `organ_or_task='Overall'`. Do NOT omit the Overall Mean row in favor of extracting only individual organs! If and only if the table does not provide any overall average row, extract the individual organs.
    - MULTI-MODALITY & TEST SETS: If a table reports results across multiple modalities (e.g. T1, T2, T1ce, FLAIR) or multiple test sets (e.g. MRI test set vs CT test set in TotalSegmentator), extract each score and also the overall mean if reported.
    - DATA PARTITIONS & BUDGETS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM, SFR SAM), tables report varying amounts of labeled data (e.g. 1%, 5%, 10%, 100%) or learning settings (Federated vs Centralized, Communication rounds). Always extract each setting and record it in `data_budget_or_setting` (e.g. "10% labeled", "1% labeled", "5 clients") so multiple legitimate experimental regimes are distinguished from duplicate contradictions!
 
@@ -101,3 +101,29 @@ Please verify this benchmark candidate:
 2. If it is evaluated with a quantitative 3D Dice score, extract the MAXIMUM (peak) score achieved by the proposed model.
 3. If it should be excluded (e.g. 2D, private, baseline-only, or graphical-only without scalar values), set is_valid_benchmark=False and state the reason.
 """
+
+BLIND_GRANULARITY_SYSTEM_PROMPT = """You are an expert scientific AI researcher conducting a double-blind peer deliberation on a medical image segmentation benchmark.
+Your task is to identify whether an aggregated Macro-Average / Overall Mean Dice score is reported in the paper for a benchmark dataset where individual anatomical sub-structures were extracted.
+
+Strict Deliberation Guidelines:
+1. BENCHMARK DATABASE REQUIREMENT: Literature benchmarks and database schemas index the single representative Macro-Average / Overall Mean Dice score (DSC) across all classes/organs for each public challenge.
+2. AGGREGATED METRIC IDENTIFICATION: Re-inspect the evaluation tables for the specified dataset. Look specifically for a summary row or column labeled 'Average', 'Mean', 'Macro-Average', 'Overall', 'Total', or 'All'.
+3. PEAK OVERALL PERFORMANCE: Extract the aggregated Overall/Mean DSC score achieved by the proposed model.
+4. EXPLICIT ABSENCE: If and only if the paper does NOT provide any aggregated mean score and only reports separate individual organ scores, state this clearly in your rationale.
+5. ABSOLUTE HONESTY: Do NOT calculate or guess a synthetic number; only extract what is explicitly written in the manuscript text/tables.
+"""
+
+BLIND_GRANULARITY_USER_TEMPLATE = """On dataset '{dataset_name}', you extracted individual organ/task breakdown scores ({organs_summary}), but did not extract an aggregated 'Overall' or 'Mean' score.
+
+A peer reviewer notes that benchmark indexing requires the single aggregated Macro-Average / Overall Mean Dice score (DSC) achieved by the proposed model '{proposed_model_id}' on '{dataset_name}'.
+
+=== RELEVANT MANUSCRIPT TABLES & CONTENT ===
+{content}
+
+Please re-evaluate:
+1. Re-inspect the table(s) reporting '{dataset_name}'.
+2. Does the table contain an explicit 'Average', 'Mean', 'Macro-Average', or 'Overall' row/column for '{proposed_model_id}'?
+3. If YES: Extract that exact aggregated Dice score, specifying prompt setting and table reference. Set organ_or_task='Overall'.
+4. If NO: Explicitly state in the rationale that the manuscript only reports organ breakdowns and provides no overall mean.
+"""
+

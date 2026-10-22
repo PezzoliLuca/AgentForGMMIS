@@ -6,6 +6,8 @@ from agent_gmmis.extraction.pdf_parser import PDFParser, ParsedManuscript
 from agent_gmmis.extraction.prompts import (
     BLIND_DISCREPANCY_SYSTEM_PROMPT,
     BLIND_DISCREPANCY_USER_TEMPLATE,
+    BLIND_GRANULARITY_SYSTEM_PROMPT,
+    BLIND_GRANULARITY_USER_TEMPLATE,
     BLIND_OMISSION_SYSTEM_PROMPT,
     BLIND_OMISSION_USER_TEMPLATE,
     EXTRACTION_SYSTEM_PROMPT,
@@ -166,5 +168,34 @@ class ExtractionAgent:
             prompt=prompt,
             response_model=ReinterrogationScoreResponse,
             system_prompt=BLIND_OMISSION_SYSTEM_PROMPT,
+        )
+
+    def reinterrogate_granularity_macro(
+        self,
+        manuscript: ParsedManuscript,
+        dataset_name: str,
+        extracted_organs: List[str],
+        proposed_model_id: str,
+    ) -> ReinterrogationScoreResponse:
+        """Re-interrogates the agent to extract the aggregated Overall/Mean score when only sub-structures were extracted.
+
+        Double-blind: instructs the agent that the database requires the representative Macro-Average / Mean
+        score, without revealing competitor scores.
+        """
+        content = self._build_context_content(
+            manuscript,
+            focal_keywords=[dataset_name, proposed_model_id, "Average", "Mean", "Overall"],
+        )
+        organs_summary = ", ".join(extracted_organs[:6]) + (f" and {len(extracted_organs) - 6} more" if len(extracted_organs) > 6 else "")
+        prompt = BLIND_GRANULARITY_USER_TEMPLATE.format(
+            dataset_name=dataset_name,
+            organs_summary=organs_summary or "individual anatomical sub-structures",
+            proposed_model_id=proposed_model_id or (manuscript.title if manuscript else "Proposed Model"),
+            content=content,
+        )
+        return self.llm.generate_structured(
+            prompt=prompt,
+            response_model=ReinterrogationScoreResponse,
+            system_prompt=BLIND_GRANULARITY_SYSTEM_PROMPT,
         )
 

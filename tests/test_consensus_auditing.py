@@ -722,3 +722,135 @@ class TestDualExtractionDeliberation:
         assert len(trajectory) == 1
         assert trajectory[0].stalled is True
         assert trajectory[0].round_number == 2
+
+    def test_peft_parameters_not_flagged_as_anomaly(self, auditor):
+        """Verifies that PEFT/Adapter models with small trainable parameter counts are not flagged as anomalous."""
+        screening = InclusionCriteriaCheck(
+            is_3d=True,
+            is_radiological=True,
+            is_public_dataset=True,
+            has_dice_metric=True,
+        )
+        # SFR-SAM: ViT-B backbone but declares 10.0M trainable adapter parameters
+        data = ExtractedPaperData(
+            proposed_model_id="SFR-SAM",
+            paper_title="SFR-SAM: Segment Anything Model with Spatial-Frequency Adapters",
+            visual_backbone="ViT-B with spatial-frequency adapter",
+            architecture="Adapter-tuned SAM",
+            millions_of_parameters=10.0,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="KiTS", organ_or_task="Overall", dice_score=0.8850),
+            ],
+        )
+
+        report = auditor.audit(data)
+        param_anomalies = [a for a in report.anomalies if a.field == "millions_of_parameters"]
+        assert len(param_anomalies) == 0, f"PEFT model should not trigger parameter anomaly: {param_anomalies}"
+
+    def test_concordant_sota_outlier_does_not_declass_consensus(self, auditor):
+        """Verifies that when two models concordantly extract a score exceeding historical SOTA, consensus certifies as VERIFIED."""
+        screening = InclusionCriteriaCheck(
+            is_3d=True,
+            is_radiological=True,
+            is_public_dataset=True,
+            has_dice_metric=True,
+        )
+        # TP-Mamba achieves 0.9660 on BTCV (historical max was 0.9210)
+        data_a = ExtractedPaperData(
+            proposed_model_id="TP-Mamba",
+            paper_title="Tri-Plane Mamba",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.9660),
+            ],
+        )
+        data_b = ExtractedPaperData(
+            proposed_model_id="TP-Mamba",
+            paper_title="Tri-Plane Mamba",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.9660),
+            ],
+        )
+
+        consensus_report = auditor.audit_consensus(data_a, data_b)
+        assert consensus_report.status == AuditStatus.VERIFIED
+        assert consensus_report.dispute_count == 0
+        assert consensus_report.confidence_score >= 0.95
+
+    def test_granularity_reinterrogation_resolves_macro_score(self, auditor):
+        """Verifies that when an agent extracts individual organs, deliberation re-interrogates to obtain Overall macro-average."""
+        from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+
+        screening = InclusionCriteriaCheck(
+            is_3d=True,
+            is_radiological=True,
+            is_public_dataset=True,
+            has_dice_metric=True,
+        )
+
+        # Agent A extracted 3 individual organs for BTCV but no Overall
+        data_a = ExtractedPaperData(
+            proposed_model_id="IMIS-Net",
+            paper_title="Interactive Medical Image Segmentation",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", dice_score=0.9400),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Spleen", dice_score=0.9100),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Kidney", dice_score=0.8800),
+            ],
+        )
+
+        # Agent B extracted the Overall mean score
+        data_b = ExtractedPaperData(
+            proposed_model_id="IMIS-Net",
+            paper_title="Interactive Medical Image Segmentation",
+            visual_backbone="ViT-B",
+            millions_of_parameters=93.7,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.9100),
+            ],
+        )
+
+        agent_a = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_b = ExtractionAgent(llm_client=LLMClient(config=LLMConfig(provider="mock")))
+        agent_a.process_manuscript = lambda m: data_a
+        agent_b.process_manuscript = lambda m: data_b
+
+        # Granularity re-interrogation returns the Macro-Average score for Agent A
+        agent_a.reinterrogate_granularity_macro = lambda m, ds, o, mod: ReinterrogationScoreResponse(
+            dataset_name=ds,
+            organ_or_task="Overall",
+            is_valid_benchmark=True,
+            dice_score=0.9100,
+            table_or_section_ref="Table 1 Mean Row",
+            rationale="Identified explicit Mean DSC row in Table 1",
+        )
+
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+        manuscript = ParsedManuscript(file_path="test.pdf", title="IMIS-Net", total_pages=1, pages_text={1: "test"})
+
+        ext_a, ext_b, final_report, trajectory = coordinator.extract_manuscript_with_deliberation(
+            manuscript=manuscript,
+            auditor=auditor,
+            max_rounds=2,
+            verbose=False,
+        )
+
+        # Agent A should now have an Overall score matching Agent B
+        overall_scores_a = [s for s in ext_a.extracted_scores if s.organ_or_task == "Overall" and s.dataset_name == "BTCV"]
+        assert len(overall_scores_a) == 1
+        assert overall_scores_a[0].dice_score == 0.9100
+
+        # Consensus report should show concordant Overall score and zero disputes
+        concordant_btcv = [cs for cs in final_report.consensus_scores if cs.canonical_dataset_name.lower() == "btcv" and cs.status == ConsensusStatus.CONCORDANT]
+        assert len(concordant_btcv) >= 1
+        assert final_report.dispute_count == 0

@@ -185,7 +185,47 @@ class DualExtractionCoordinator:
             queries_to_run: List[Tuple[str, str, Any]] = []
             seen_queries: Set[Tuple[str, str]] = set()
 
-            # Identify items to re-interrogate
+            OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}
+
+            # Identify Granularity Mismatches (single organs vs macro-average)
+            all_canon_ds: Set[str] = set()
+            for s in (extracted_a.extracted_scores + extracted_b.extracted_scores):
+                if not s.is_baseline_comparison and s.dataset_name:
+                    c = (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name).strip()
+                    if c:
+                        all_canon_ds.add(c)
+
+            for c_ds in sorted(list(all_canon_ds)):
+                scores_a_d = [
+                    s for s in extracted_a.extracted_scores
+                    if not s.is_baseline_comparison
+                    and (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
+                ]
+                scores_b_d = [
+                    s for s in extracted_b.extracted_scores
+                    if not s.is_baseline_comparison
+                    and (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
+                ]
+
+                has_overall_a = any((s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS for s in scores_a_d)
+                has_overall_b = any((s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS for s in scores_b_d)
+                ds_name_display = scores_a_d[0].dataset_name if scores_a_d else (scores_b_d[0].dataset_name if scores_b_d else c_ds)
+
+                # If Agent A has multi-organ breakdown (>=2 scores) but lacks Overall score
+                if len(scores_a_d) >= 2 and not has_overall_a:
+                    if ("granularity_a", c_ds) not in seen_queries:
+                        organs_a = [s.organ_or_task for s in scores_a_d if s.organ_or_task]
+                        queries_to_run.append(("granularity_a", c_ds, (ds_name_display, organs_a)))
+                        seen_queries.add(("granularity_a", c_ds))
+
+                # If Agent B has multi-organ breakdown (>=2 scores) but lacks Overall score
+                if len(scores_b_d) >= 2 and not has_overall_b:
+                    if ("granularity_b", c_ds) not in seen_queries:
+                        organs_b = [s.organ_or_task for s in scores_b_d if s.organ_or_task]
+                        queries_to_run.append(("granularity_b", c_ds, (ds_name_display, organs_b)))
+                        seen_queries.add(("granularity_b", c_ds))
+
+            # Identify items to re-interrogate (Disputes and Omissions)
             for cs in audit_report.consensus_scores:
                 canon_ds = cs.canonical_dataset_name or cs.dataset_name or "Unknown"
                 if cs.status == ConsensusStatus.DISPUTED:
@@ -199,13 +239,23 @@ class DualExtractionCoordinator:
                         seen_queries.add(("dispute_b", item_key))
                 elif cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED:
                     if cs.score_a is not None and cs.score_b is None:
-                        # Agent B omitted - query once per omitted dataset
-                        if ("omission_b", canon_ds) not in seen_queries:
+                        # Agent B omitted - query only if Agent B has zero scores for canon_ds
+                        has_any_b = any(
+                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == canon_ds.lower()
+                            for s in extracted_b.extracted_scores
+                            if not s.is_baseline_comparison
+                        )
+                        if not has_any_b and ("omission_b", canon_ds) not in seen_queries:
                             queries_to_run.append(("omission_b", canon_ds, cs))
                             seen_queries.add(("omission_b", canon_ds))
                     elif cs.score_b is not None and cs.score_a is None:
-                        # Agent A omitted - query once per omitted dataset
-                        if ("omission_a", canon_ds) not in seen_queries:
+                        # Agent A omitted - query only if Agent A has zero scores for canon_ds
+                        has_any_a = any(
+                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == canon_ds.lower()
+                            for s in extracted_a.extracted_scores
+                            if not s.is_baseline_comparison
+                        )
+                        if not has_any_a and ("omission_a", canon_ds) not in seen_queries:
                             queries_to_run.append(("omission_a", canon_ds, cs))
                             seen_queries.add(("omission_a", canon_ds))
 
@@ -246,6 +296,24 @@ class DualExtractionCoordinator:
                             self.agent_b.reinterrogate_omission,
                             manuscript,
                             cs.dataset_name,
+                            resolved_model_id,
+                        )
+                    elif q_type == "granularity_a":
+                        ds_name_disp, organs_list = cs
+                        f = executor.submit(
+                            self.agent_a.reinterrogate_granularity_macro,
+                            manuscript,
+                            ds_name_disp,
+                            organs_list,
+                            resolved_model_id,
+                        )
+                    elif q_type == "granularity_b":
+                        ds_name_disp, organs_list = cs
+                        f = executor.submit(
+                            self.agent_b.reinterrogate_granularity_macro,
+                            manuscript,
+                            ds_name_disp,
+                            organs_list,
                             resolved_model_id,
                         )
                     else:
@@ -364,6 +432,50 @@ class DualExtractionCoordinator:
                         else:
                             round_details.append(f"Agent B verified exclusion of {canon_ds}: {resp_b.exclusion_reason or resp_b.rationale}")
 
+            # 5. Granularity Macro-Average Updates
+            for c_ds in sorted(list(all_canon_ds)):
+                if ("granularity_a", c_ds) in results:
+                    resp_a = results[("granularity_a", c_ds)]
+                    if resp_a.is_valid_benchmark and resp_a.dice_score is not None:
+                        already_has_overall = any(
+                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
+                            and (s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS
+                            for s in extracted_a.extracted_scores
+                        )
+                        if not already_has_overall:
+                            extracted_a.extracted_scores.append(
+                                RawExtractedScore(
+                                    dataset_name=c_ds,
+                                    organ_or_task="Overall",
+                                    dice_score=resp_a.dice_score,
+                                    prompt_type=resp_a.prompt_type or "automated",
+                                    table_or_section_ref=resp_a.table_or_section_ref,
+                                    notes=f"Aggregated macro-average recovered during deliberation round {round_num}: {resp_a.rationale}",
+                                )
+                            )
+                            round_details.append(f"Agent A extracted Overall macro-average for {c_ds}: {resp_a.dice_score}")
+
+                if ("granularity_b", c_ds) in results:
+                    resp_b = results[("granularity_b", c_ds)]
+                    if resp_b.is_valid_benchmark and resp_b.dice_score is not None:
+                        already_has_overall = any(
+                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
+                            and (s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS
+                            for s in extracted_b.extracted_scores
+                        )
+                        if not already_has_overall:
+                            extracted_b.extracted_scores.append(
+                                RawExtractedScore(
+                                    dataset_name=c_ds,
+                                    organ_or_task="Overall",
+                                    dice_score=resp_b.dice_score,
+                                    prompt_type=resp_b.prompt_type or "automated",
+                                    table_or_section_ref=resp_b.table_or_section_ref,
+                                    notes=f"Aggregated macro-average recovered during deliberation round {round_num}: {resp_b.rationale}",
+                                )
+                            )
+                            round_details.append(f"Agent B extracted Overall macro-average for {c_ds}: {resp_b.dice_score}")
+
             # Re-evaluate consensus with updated extractions
             new_report = auditor.audit_consensus(
                 extracted_a,
@@ -402,7 +514,19 @@ class DualExtractionCoordinator:
                 mae_str = f"{audit_report.inter_model_dice_mae:.4f}" if audit_report.inter_model_dice_mae is not None else "N/A"
                 print(f"   🤝 [Round {round_num} Result] Concordance: {audit_report.concordance_rate*100:.1f}%, MAE: {mae_str} ({audit_report.concordant_count} concordant, {audit_report.dispute_count} disputed, {audit_report.unconfirmed_count} unconfirmed)")
 
-            if audit_report.dispute_count == 0 and audit_report.unconfirmed_count == 0:
+            # Check convergence: 0 disputes and 0 genuine omissions on benchmark datasets
+            concordant_ds = {
+                cs.canonical_dataset_name.lower()
+                for cs in audit_report.consensus_scores
+                if cs.status == ConsensusStatus.CONCORDANT and cs.canonical_dataset_name
+            }
+            genuine_unconf = [
+                cs for cs in audit_report.consensus_scores
+                if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED
+                and cs.canonical_dataset_name.lower() not in concordant_ds
+            ]
+
+            if audit_report.dispute_count == 0 and len(genuine_unconf) == 0:
                 if verbose:
                     print(f"   ✨ Deliberation converged: 100% consensus achieved on Round {round_num}!")
                 break

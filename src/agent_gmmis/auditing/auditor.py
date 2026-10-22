@@ -207,9 +207,12 @@ class AuditorAgent:
                 )
             else:
                 # Heuristic architectural family checks
-                backbone_text = f"{extracted.visual_backbone or ''} {extracted.architecture or ''}".lower()
+                backbone_text = f"{extracted.visual_backbone or ''} {extracted.architecture or ''} {extracted.proposed_model_id} {extracted.paper_title}".lower()
+                PEFT_KEYWORDS = {"adapter", "lora", "peft", "prompt", "tuning", "frozen", "trainable", "efficient", "lean", "hybrid", "distill", "lightweight"}
+                is_peft = any(k in backbone_text for k in PEFT_KEYWORDS)
+
                 if "vit-b" in backbone_text or "vit base" in backbone_text or "vit-base" in backbone_text:
-                    if params < 30.0 or params > 350.0:
+                    if (params < 30.0 and not is_peft) or params > 350.0:
                         anomalies.append(
                             AuditAnomaly(
                                 field="millions_of_parameters",
@@ -220,7 +223,7 @@ class AuditorAgent:
                             )
                         )
                 elif "vit-l" in backbone_text or "vit large" in backbone_text or "vit-large" in backbone_text:
-                    if params < 150.0 or params > 700.0:
+                    if (params < 150.0 and not is_peft) or params > 700.0:
                         anomalies.append(
                             AuditAnomaly(
                                 field="millions_of_parameters",
@@ -231,7 +234,7 @@ class AuditorAgent:
                             )
                         )
                 elif "vit-h" in backbone_text or "vit huge" in backbone_text or "vit-huge" in backbone_text:
-                    if params < 350.0 or params > 1500.0:
+                    if (params < 350.0 and not is_peft) or params > 1500.0:
                         anomalies.append(
                             AuditAnomaly(
                                 field="millions_of_parameters",
@@ -827,15 +830,23 @@ class AuditorAgent:
                         continue
 
                     OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}
+
+                    is_overall_a = organ_a_norm in OVERALL_SYNONYMS
+                    is_overall_b = organ_b_norm in OVERALL_SYNONYMS
+
+                    # If one is an aggregated macro-average and the other is a specific organ, do not match as the same test
+                    if is_overall_a != is_overall_b and (organ_a_norm and organ_b_norm):
+                        continue
+
                     match_pts = 0
                     if organ_a_norm == organ_b_norm or (not organ_a_norm and not organ_b_norm):
                         match_pts += 3
-                    elif organ_a_norm in OVERALL_SYNONYMS and organ_b_norm in OVERALL_SYNONYMS:
+                    elif is_overall_a and is_overall_b:
                         match_pts += 3
                     elif organ_a_norm in organ_b_norm or organ_b_norm in organ_a_norm:
                         match_pts += 2
 
-                    if prompt_a_norm == prompt_b_norm:
+                    if prompt_a_norm and prompt_b_norm and prompt_a_norm == prompt_b_norm:
                         match_pts += 2
 
                     if budget_a_norm and budget_b_norm and budget_a_norm == budget_b_norm:
@@ -848,7 +859,7 @@ class AuditorAgent:
                         best_match_score = match_pts
                         best_match_idx = idx
 
-                if best_match_idx is not None and (best_match_score > 0 or len(list_b) == 1):
+                if best_match_idx is not None and (best_match_score > 0 or (len(list_b) == 1 and len(list_a) == 1)):
                     matched_b_indices.add(best_match_idx)
                     s_b = list_b[best_match_idx]
 
@@ -958,6 +969,33 @@ class AuditorAgent:
             report_a.status == AuditStatus.NEEDS_OUTREACH or report_b.status == AuditStatus.NEEDS_OUTREACH
         )
 
+        # Datasets where both models achieved concordant agreement
+        concordant_canon_datasets = {
+            cs.canonical_dataset_name.lower()
+            for cs in consensus_scores
+            if cs.status == ConsensusStatus.CONCORDANT and cs.canonical_dataset_name
+        }
+
+        # Filter out outliers that were simply exceeding historical SOTA if verified concordantly by both agents
+        genuine_outliers_a = [
+            o for o in report_a.outliers
+            if not ("exceeds historical SOTA" in (o.reason or "") and o.dataset_name.lower() in concordant_canon_datasets)
+        ]
+        genuine_outliers_b = [
+            o for o in report_b.outliers
+            if not ("exceeds historical SOTA" in (o.reason or "") and o.dataset_name.lower() in concordant_canon_datasets)
+        ]
+        all_genuine_outliers = genuine_outliers_a + genuine_outliers_b
+
+        # Unconfirmed singletons that belong to a dataset that is ALREADY concordant at the macro level
+        # are merely anatomical sub-organ breakdowns, not missing benchmark datasets
+        genuine_unconfirmed = [
+            cs for cs in consensus_scores
+            if cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED
+            and cs.canonical_dataset_name.lower() not in concordant_canon_datasets
+        ]
+        genuine_unconfirmed_count = len(genuine_unconfirmed)
+
         if not consensus_screening.is_included or has_critical_anomaly:
             final_status = AuditStatus.REJECTED
         elif has_repo_inspection and total_unique_benchmarks == 0:
@@ -970,33 +1008,35 @@ class AuditorAgent:
             or consensus_metadata.model_id_status == ConsensusStatus.DISPUTED
         ):
             final_status = AuditStatus.FLAGGED_WARNING
-        elif report_a.status == AuditStatus.VERIFIED and report_b.status == AuditStatus.VERIFIED and dispute_count == 0:
-            final_status = AuditStatus.VERIFIED
-        elif len(report_a.anomalies) > 0 or len(report_b.anomalies) > 0 or len(report_a.outliers) > 0 or len(report_b.outliers) > 0:
+        elif len(report_a.anomalies) > 0 or len(report_b.anomalies) > 0 or len(all_genuine_outliers) > 0:
             final_status = AuditStatus.FLAGGED_WARNING
         else:
             final_status = AuditStatus.VERIFIED
 
         # Confidence calculation: bounded and proportional
-        avg_base_conf = (report_a.confidence_score + report_b.confidence_score) / 2.0
-        confidence = avg_base_conf
+        confidence = 1.0
+        if has_critical_anomaly:
+            confidence -= 0.50
+
+        all_warnings = [a for a in (report_a.anomalies + report_b.anomalies) if a.severity == "warning"]
+        confidence -= min(0.35, len(all_warnings) * 0.05)
+        confidence -= min(0.20, len(all_genuine_outliers) * 0.05)
 
         # Boost for concordance: multi-model agreement gives strong confidence boost
         if concordant_count > 0 and dispute_count == 0:
             confidence += min(0.20, concordant_count * 0.03)
 
-        # Bounded and relative penalties for disputes and unconfirmed singletons
+        # Bounded and relative penalties for disputes and genuine unconfirmed omissions
         if dispute_count > 0:
             if paired_count > 0:
                 dispute_ratio = dispute_count / paired_count
-                dispute_penalty = min(0.25, round(dispute_ratio * 0.25, 2))
+                confidence -= min(0.25, round(dispute_ratio * 0.25, 2))
             else:
-                dispute_penalty = min(0.25, round(dispute_count * 0.05, 2))
-            confidence -= dispute_penalty
+                confidence -= min(0.25, round(dispute_count * 0.05, 2))
 
-        if unconfirmed_count > 0:
-            # Modest penalty for coverage asymmetry, capped at 0.08
-            confidence -= min(0.08, round(unconfirmed_count * 0.01, 2))
+        if genuine_unconfirmed_count > 0:
+            # Modest penalty for actual benchmark dataset omissions (ignoring sub-organ breakdowns)
+            confidence -= min(0.08, round(genuine_unconfirmed_count * 0.02, 2))
 
         if consensus_screening.status == ConsensusStatus.DISPUTED:
             confidence -= 0.15
