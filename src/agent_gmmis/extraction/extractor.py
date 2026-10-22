@@ -33,7 +33,7 @@ class ExtractionAgent:
         self,
         manuscript: ParsedManuscript,
         focal_keywords: Optional[List[str]] = None,
-        max_chars: int = 35000,
+        max_chars: int = 24000,
     ) -> str:
         """Composes a relevant text snippet prioritizing focal keywords, introductory pages,
 

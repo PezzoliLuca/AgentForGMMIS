@@ -204,10 +204,24 @@ class LLMClient:
         resp_name = getattr(response_model, "__name__", "")
         max_needed_output = 2200 if resp_name == "ExtractedPaperData" else 800
 
-        total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0)
+        # Robust JSON-object Schema prompt for vLLM / Mufasa / Ollama
+        schema_json = json.dumps(response_model.model_json_schema(), indent=2)
+
+        total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
         approx_tokens = int(total_chars / 2.8) + 400
         context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
-        safe_max_tokens = min(max_needed_output, max(256, context_limit - approx_tokens - 200))
+
+        # If prompt + schema approaches or exceeds context window, proactively trim middle of manuscript
+        if approx_tokens > context_limit - 1600 and len(prompt) > 6000:
+            excess_chars = int((approx_tokens - (context_limit - 2200)) * 2.8)
+            mid = len(prompt) // 2
+            half_trim = min(mid - 1000, max(1000, excess_chars // 2))
+            prompt = prompt[: mid - half_trim] + "\n\n[... middle text trimmed to respect context limit ...]\n\n" + prompt[mid + half_trim :]
+            messages[-1]["content"] = prompt
+            total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
+            approx_tokens = int(total_chars / 2.8) + 400
+
+        safe_max_tokens = min(max_needed_output, max(256, context_limit - approx_tokens - 100))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
         use_beta_parse = self.config.provider not in ("mufasa", "ollama")
@@ -227,8 +241,6 @@ class LLMClient:
             except Exception:
                 pass
 
-        # Robust JSON-object Schema prompt for vLLM / Mufasa / Ollama
-        schema_json = json.dumps(response_model.model_json_schema(), indent=2)
         augmented_messages = [dict(m) for m in messages]
         augmented_messages[0]["content"] += f"\n\nYou MUST respond with a valid JSON object strictly conforming to this JSON Schema:\n{schema_json}"
         

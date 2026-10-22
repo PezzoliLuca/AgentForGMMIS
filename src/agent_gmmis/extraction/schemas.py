@@ -38,10 +38,26 @@ class RawExtractedScore(BaseModel):
 
     @field_validator("dice_score", mode="before")
     @classmethod
-    def normalize_score(cls, v: Optional[float]) -> Optional[float]:
+    def normalize_score(cls, v) -> Optional[float]:
         if v is None:
             return None
-        val = float(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if not s or any(phrase in s for phrase in ("not", "n/a", "none", "null", "unknown", "-")):
+                return None
+            import re
+            m = re.search(r"[-+]?\d*\.?\d+", s)
+            if m:
+                try:
+                    v = float(m.group(0))
+                except ValueError:
+                    return None
+            else:
+                return None
+        try:
+            val = float(v)
+        except (ValueError, TypeError):
+            return None
         if val > 1.0 and val <= 100.0:
             val = val / 100.0
         if val < 0.0 or val > 1.0:
@@ -63,7 +79,7 @@ class ExtractedPaperData(BaseModel):
     millions_of_parameters: Optional[float] = Field(None, description="Parameter count in millions (M)")
     number_of_gflops: Optional[float] = Field(None, description="GFLOPs complexity count")
     resources: Optional[str] = Field(None, description="Hardware training resources (e.g. 8x NVIDIA A100 80GB)")
-    resources_total_vram_gb: Optional[int] = Field(None, description="Total VRAM in GB across all training GPUs")
+    resources_total_vram_gb: Optional[float] = Field(None, description="Total VRAM in GB across all training GPUs")
 
     # Screening & Evaluation
     screening: InclusionCriteriaCheck = Field(..., description="Scientific inclusion/exclusion screening check")
@@ -72,6 +88,27 @@ class ExtractedPaperData(BaseModel):
         description="All quantitative Dice scores extracted from tables and text",
     )
     extraction_notes: Optional[str] = Field(None, description="Qualitative notes or ambiguities encountered")
+
+    @field_validator("millions_of_parameters", "number_of_gflops", "resources_total_vram_gb", mode="before")
+    @classmethod
+    def parse_optional_numeric(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if not s or any(phrase in s for phrase in ("not", "n/a", "none", "null", "unknown", "unspecified", "undisclosed")):
+                return None
+            import re
+            m = re.search(r"[-+]?\d*\.?\d+", s)
+            if m:
+                try:
+                    return float(m.group(0))
+                except ValueError:
+                    return None
+            return None
+        return None
 
 
 class ReinterrogationScoreResponse(BaseModel):

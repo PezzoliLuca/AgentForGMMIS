@@ -88,6 +88,39 @@ class TestExtractionSchemas:
             ],
         )
         assert data.proposed_model_id == "MedSAM"
+
+    def test_robust_string_and_float_parsing(self):
+        """Verifies that LLM string phrases like 'Not explicitly mentioned' and float VRAM parse cleanly."""
+        data = ExtractedPaperData(
+            paper_title="Test Model",
+            proposed_model_id="TestModel",
+            millions_of_parameters="Not explicitly mentioned",
+            number_of_gflops="N/A",
+            resources_total_vram_gb=91.767,  # float VRAM reported in FLAP-SAM/MoME
+            screening=InclusionCriteriaCheck(
+                is_3d=True,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[
+                RawExtractedScore(
+                    dataset_name="BTCV",
+                    organ_or_task="Overall",
+                    dice_score="88.5%",
+                ),
+                RawExtractedScore(
+                    dataset_name="BraTS",
+                    organ_or_task="Overall",
+                    dice_score="not reported",
+                ),
+            ],
+        )
+        assert data.millions_of_parameters is None
+        assert data.number_of_gflops is None
+        assert data.resources_total_vram_gb == 91.767
+        assert data.extracted_scores[0].dice_score == 0.885
+        assert data.extracted_scores[1].dice_score is None
         assert len(data.extracted_scores) == 2
         assert data.screening.is_included is True
 
