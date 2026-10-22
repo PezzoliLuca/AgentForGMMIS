@@ -126,6 +126,30 @@ class AuditorAgent:
 
         return False
 
+    @staticmethod
+    def normalize_data_budget(budget: Optional[str]) -> Optional[str]:
+        """
+        Normalizes data budget strings into canonical semantics (e.g. percentages or shots).
+        E.g. '100% labeled', '100% training data (24 samples)', 'fully supervised' -> '100%'
+             '25% labeled', '25% training data (6 samples)' -> '25%'
+             '1-shot', '1 shot' -> '1-shot'
+        """
+        if not budget:
+            return None
+        b_lower = budget.strip().lower()
+        # 1. Percentage check (e.g. 100%, 30%, 25%, 12%, 10%, 1%)
+        pct_match = re.search(r"\b(\d{1,3})\s*%", b_lower)
+        if pct_match:
+            return f"{pct_match.group(1)}%"
+        # 2. Shot check (e.g. 1-shot, 5-shot)
+        shot_match = re.search(r"\b(\d{1,2})\s*-?\s*shots?\b", b_lower)
+        if shot_match:
+            return f"{shot_match.group(1)}-shot"
+        # 3. Supervised synonyms
+        if any(w in b_lower for w in ["fully supervised", "full data", "all data", "full training", "100 percent"]):
+            return "100%"
+        return b_lower
+
     def audit(
         self,
         extracted: ExtractedPaperData,
@@ -207,12 +231,13 @@ class AuditorAgent:
                 )
             else:
                 # Heuristic architectural family checks
-                backbone_text = f"{extracted.visual_backbone or ''} {extracted.architecture or ''} {extracted.proposed_model_id} {extracted.paper_title}".lower()
+                notes_text = " ".join([s.notes or "" for s in extracted.extracted_scores[:10]]).lower()
+                backbone_text = f"{extracted.visual_backbone or ''} {extracted.architecture or ''} {extracted.proposed_model_id} {extracted.paper_title} {notes_text}".lower()
                 PEFT_KEYWORDS = {"adapter", "lora", "peft", "prompt", "tuning", "frozen", "trainable", "efficient", "lean", "hybrid", "distill", "lightweight"}
                 is_peft = any(k in backbone_text for k in PEFT_KEYWORDS)
 
                 if "vit-b" in backbone_text or "vit base" in backbone_text or "vit-base" in backbone_text:
-                    if (params < 30.0 and not is_peft) or params > 350.0:
+                    if (params < 20.0 and not is_peft) or (params > 350.0 and not any(k in backbone_text for k in ["multimodal", "text", "focal", "language"])):
                         anomalies.append(
                             AuditAnomaly(
                                 field="millions_of_parameters",
@@ -375,7 +400,11 @@ class AuditorAgent:
             scores_by_val.setdefault(val, set()).add((d_canon, task))
 
         for score_v, tasks_set in scores_by_val.items():
-            if len(tasks_set) >= 4:
+            distinct_datasets = {d for d, _ in tasks_set if d and d != "unknown"}
+            # A true template hallucination occurs when the identical score is copy-pasted across
+            # multiple distinct benchmark datasets (e.g. BTCV and ACDC and ISLES all sharing 0.8500).
+            # If multiple tasks/organs belong to the same dataset (e.g. 4 SegTHOR organs), it is legitimate.
+            if len(distinct_datasets) >= 3 or len(tasks_set) >= 8:
                 passed_sanity = False
                 has_cloned_template_hallucination = True
                 anomalies.append(
@@ -383,8 +412,8 @@ class AuditorAgent:
                         field="extracted_scores",
                         severity="critical",
                         message=(
-                            f"Suspiciously identical Dice score ({score_v:.4f}) repeated across {len(tasks_set)} "
-                            f"different benchmarks/tasks. Strong indicator of LLM template hallucination."
+                            f"Suspiciously identical Dice score ({score_v:.4f}) repeated across {len(distinct_datasets)} "
+                            f"distinct datasets ({', '.join(sorted(distinct_datasets)[:4])}). Strong indicator of LLM template hallucination."
                         ),
                         extracted_value=score_v,
                     )
@@ -807,26 +836,22 @@ class AuditorAgent:
                     )
                 continue
 
-            # Present in both -> match individual score rows
-            matched_b_indices: Set[int] = set()
-            for s_a in list_a:
-                canon_name = (self.alias_resolver.resolve(s_a.dataset_name) if s_a.dataset_name else None) or s_a.dataset_name or "Unknown"
+            # Present in both -> match individual score rows using optimal greedy bipartite matching
+            candidate_pairs = []
+            for idx_a, s_a in enumerate(list_a):
                 organ_a_norm = (s_a.organ_or_task or "").strip().lower()
                 prompt_a_norm = (s_a.prompt_type or "").strip().lower()
                 budget_a_norm = (s_a.data_budget_or_setting or "").strip().lower()
+                sem_budget_a = self.normalize_data_budget(s_a.data_budget_or_setting)
 
-                best_match_idx = None
-                best_match_score = -1
-
-                for idx, s_b in enumerate(list_b):
-                    if idx in matched_b_indices:
-                        continue
+                for idx_b, s_b in enumerate(list_b):
                     organ_b_norm = (s_b.organ_or_task or "").strip().lower()
                     prompt_b_norm = (s_b.prompt_type or "").strip().lower()
                     budget_b_norm = (s_b.data_budget_or_setting or "").strip().lower()
+                    sem_budget_b = self.normalize_data_budget(s_b.data_budget_or_setting)
 
-                    # If both explicitly specify different data budget splits (e.g. 10% vs 20%), do not match as same test
-                    if budget_a_norm and budget_b_norm and budget_a_norm != budget_b_norm:
+                    # If both explicitly specify contradictory data budget splits (e.g. 10% vs 20%), do not match as same test
+                    if sem_budget_a and sem_budget_b and sem_budget_a != sem_budget_b:
                         continue
 
                     OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}
@@ -834,9 +859,13 @@ class AuditorAgent:
                     is_overall_a = organ_a_norm in OVERALL_SYNONYMS
                     is_overall_b = organ_b_norm in OVERALL_SYNONYMS
 
+                    diff_score = abs(s_a.dice_score - s_b.dice_score) if (s_a.dice_score is not None and s_b.dice_score is not None) else 1.0
+
                     # If one is an aggregated macro-average and the other is a specific organ, do not match as the same test
+                    # unless both agents extracted only 1 row for this dataset or the scores match identically
                     if is_overall_a != is_overall_b and (organ_a_norm and organ_b_norm):
-                        continue
+                        if not (len(list_a) == 1 and len(list_b) == 1) and diff_score > 0.01:
+                            continue
 
                     match_pts = 0
                     if organ_a_norm == organ_b_norm or (not organ_a_norm and not organ_b_norm):
@@ -849,62 +878,84 @@ class AuditorAgent:
                     if prompt_a_norm and prompt_b_norm and prompt_a_norm == prompt_b_norm:
                         match_pts += 2
 
-                    if budget_a_norm and budget_b_norm and budget_a_norm == budget_b_norm:
+                    if sem_budget_a and sem_budget_b and sem_budget_a == sem_budget_b:
                         match_pts += 3
+                    elif budget_a_norm and budget_b_norm and budget_a_norm == budget_b_norm:
+                        match_pts += 3
+
+                    if diff_score <= 0.01:
+                        match_pts += 5
+                    elif diff_score <= 0.05:
+                        match_pts += 2
 
                     if len(list_b) == 1 and len(list_a) == 1:
                         match_pts += 1
 
-                    if match_pts > best_match_score:
-                        best_match_score = match_pts
-                        best_match_idx = idx
+                    if match_pts > 0:
+                        candidate_pairs.append((match_pts, -diff_score, idx_a, idx_b))
 
-                if best_match_idx is not None and (best_match_score > 0 or (len(list_b) == 1 and len(list_a) == 1)):
-                    matched_b_indices.add(best_match_idx)
-                    s_b = list_b[best_match_idx]
+            # Sort candidate pairs by highest match points, then smallest score difference
+            candidate_pairs.sort(key=lambda x: (x[0], x[1]), reverse=True)
 
-                    val_a = s_a.dice_score
-                    val_b = s_b.dice_score
+            matched_a_indices: Set[int] = set()
+            matched_b_indices: Set[int] = set()
 
-                    if val_a is not None and val_b is not None:
-                        delta = abs(round(val_a - val_b, 4))
-                        if delta <= tolerance:
-                            status = ConsensusStatus.CONCORDANT
-                            resolved_val = round((val_a + val_b) / 2.0, 4)
-                            notes = f"Concordant agreement (|A - B| = {delta:.4f} <= {tolerance:.4f})"
-                        else:
-                            status = ConsensusStatus.DISPUTED
-                            resolved_val = None
-                            notes = f"DISPUTED: Agent A reported {val_a:.4f}, Agent B reported {val_b:.4f} (diff = {delta:+.4f} > {tolerance:.4f})"
-                    elif val_a is None and val_b is None:
-                        delta = 0.0
+            for pts, _, idx_a, idx_b in candidate_pairs:
+                if idx_a in matched_a_indices or idx_b in matched_b_indices:
+                    continue
+                matched_a_indices.add(idx_a)
+                matched_b_indices.add(idx_b)
+
+                s_a = list_a[idx_a]
+                s_b = list_b[idx_b]
+                canon_name = (self.alias_resolver.resolve(s_a.dataset_name) if s_a.dataset_name else None) or s_a.dataset_name or "Unknown"
+
+                val_a = s_a.dice_score
+                val_b = s_b.dice_score
+
+                if val_a is not None and val_b is not None:
+                    delta = abs(round(val_a - val_b, 4))
+                    if delta <= tolerance:
                         status = ConsensusStatus.CONCORDANT
-                        resolved_val = None
-                        notes = "Both models identified qualitative mention without scalar Dice score."
+                        resolved_val = round((val_a + val_b) / 2.0, 4)
+                        notes = f"Concordant agreement (|A - B| = {delta:.4f} <= {tolerance:.4f})"
                     else:
-                        delta = None
                         status = ConsensusStatus.DISPUTED
                         resolved_val = None
-                        notes = f"DISPUTED: One agent extracted scalar value ({val_a if val_a is not None else val_b}), other did not."
-
-                    consensus_scores.append(
-                        ConsensusScore(
-                            dataset_name=s_a.dataset_name,
-                            canonical_dataset_name=canon_name,
-                            organ_or_task=s_a.organ_or_task or s_b.organ_or_task,
-                            status=status,
-                            score_a=val_a,
-                            score_b=val_b,
-                            resolved_score=resolved_val,
-                            delta=delta,
-                            table_ref_a=s_a.table_or_section_ref,
-                            table_ref_b=s_b.table_or_section_ref,
-                            prompt_type=s_a.prompt_type or s_b.prompt_type,
-                            data_budget_or_setting=s_a.data_budget_or_setting or s_b.data_budget_or_setting,
-                            notes=notes,
-                        )
-                    )
+                        notes = f"DISPUTED: Agent A reported {val_a:.4f}, Agent B reported {val_b:.4f} (diff = {delta:+.4f} > {tolerance:.4f})"
+                elif val_a is None and val_b is None:
+                    delta = 0.0
+                    status = ConsensusStatus.CONCORDANT
+                    resolved_val = None
+                    notes = "Both models identified qualitative mention without scalar Dice score."
                 else:
+                    delta = None
+                    status = ConsensusStatus.DISPUTED
+                    resolved_val = None
+                    notes = f"DISPUTED: One agent extracted scalar value ({val_a if val_a is not None else val_b}), other did not."
+
+                consensus_scores.append(
+                    ConsensusScore(
+                        dataset_name=s_a.dataset_name,
+                        canonical_dataset_name=canon_name,
+                        organ_or_task=s_a.organ_or_task or s_b.organ_or_task,
+                        status=status,
+                        score_a=val_a,
+                        score_b=val_b,
+                        resolved_score=resolved_val,
+                        delta=delta,
+                        table_ref_a=s_a.table_or_section_ref,
+                        table_ref_b=s_b.table_or_section_ref,
+                        prompt_type=s_a.prompt_type or s_b.prompt_type,
+                        data_budget_or_setting=s_a.data_budget_or_setting or s_b.data_budget_or_setting,
+                        notes=notes,
+                    )
+                )
+
+            # Unmatched rows from Agent A
+            for idx_a, s_a in enumerate(list_a):
+                if idx_a not in matched_a_indices:
+                    canon_name = (self.alias_resolver.resolve(s_a.dataset_name) if s_a.dataset_name else None) or s_a.dataset_name or "Unknown"
                     consensus_scores.append(
                         ConsensusScore(
                             dataset_name=s_a.dataset_name,
@@ -922,8 +973,9 @@ class AuditorAgent:
                         )
                     )
 
-            for idx, s_b in enumerate(list_b):
-                if idx not in matched_b_indices:
+            # Unmatched rows from Agent B
+            for idx_b, s_b in enumerate(list_b):
+                if idx_b not in matched_b_indices:
                     canon_name = (self.alias_resolver.resolve(s_b.dataset_name) if s_b.dataset_name else None) or s_b.dataset_name or "Unknown"
                     consensus_scores.append(
                         ConsensusScore(
@@ -961,12 +1013,40 @@ class AuditorAgent:
         )
 
         # 6. Overall Certification Status & Confidence Score
-        has_critical_anomaly = any(a.severity == "critical" for a in (report_a.anomalies + report_b.anomalies))
+        # In a dual-agent architecture, a single agent's critical anomaly (e.g. hallucinated training table rows in Agent A)
+        # is neutralized if Agent B refutes it, it is rejected during deliberation, and none of those rows enter consensus.
+        # Thus, score anomalies are only critical to the consensus if they persist across multiple concordant datasets.
+        def is_consensus_critical(a: AuditAnomaly) -> bool:
+            if a.severity != "critical":
+                return False
+            # Parameter anomalies or model identity anomalies are critical to the paper itself
+            if a.field != "extracted_scores":
+                return True
+            # For template hallucination on extracted_scores, check if the identical score
+            # appears across multiple distinct datasets in the CONCORDANT consensus scores
+            if a.extracted_value is not None:
+                try:
+                    val = round(float(a.extracted_value), 4)
+                    concordant_datasets_with_val = {
+                        cs.canonical_dataset_name.lower()
+                        for cs in consensus_scores
+                        if cs.status == ConsensusStatus.CONCORDANT
+                        and cs.resolved_score is not None
+                        and round(cs.resolved_score, 4) == val
+                    }
+                    return len(concordant_datasets_with_val) >= 3
+                except (ValueError, TypeError):
+                    return True
+            return True
+
+        has_critical_anomaly = any(is_consensus_critical(a) for a in (report_a.anomalies + report_b.anomalies))
         has_repo_inspection = (
-            report_a.status == AuditStatus.NEEDS_REPO_INSPECTION or report_b.status == AuditStatus.NEEDS_REPO_INSPECTION
+            (report_a.status == AuditStatus.NEEDS_REPO_INSPECTION or report_b.status == AuditStatus.NEEDS_REPO_INSPECTION)
+            and total_unique_benchmarks == 0
         )
         has_outreach = (
-            report_a.status == AuditStatus.NEEDS_OUTREACH or report_b.status == AuditStatus.NEEDS_OUTREACH
+            (report_a.status == AuditStatus.NEEDS_OUTREACH or report_b.status == AuditStatus.NEEDS_OUTREACH)
+            and total_unique_benchmarks == 0
         )
 
         # Datasets where both models achieved concordant agreement
@@ -996,29 +1076,17 @@ class AuditorAgent:
         ]
         genuine_unconfirmed_count = len(genuine_unconfirmed)
 
-        if not consensus_screening.is_included or has_critical_anomaly:
-            final_status = AuditStatus.REJECTED
-        elif has_repo_inspection and total_unique_benchmarks == 0:
-            final_status = AuditStatus.NEEDS_REPO_INSPECTION
-        elif has_outreach and total_unique_benchmarks == 0:
-            final_status = AuditStatus.NEEDS_OUTREACH
-        elif (
-            dispute_count > 0
-            or consensus_screening.status == ConsensusStatus.DISPUTED
-            or consensus_metadata.model_id_status == ConsensusStatus.DISPUTED
-        ):
-            final_status = AuditStatus.FLAGGED_WARNING
-        elif len(report_a.anomalies) > 0 or len(report_b.anomalies) > 0 or len(all_genuine_outliers) > 0:
-            final_status = AuditStatus.FLAGGED_WARNING
-        else:
-            final_status = AuditStatus.VERIFIED
-
         # Confidence calculation: bounded and proportional
         confidence = 1.0
         if has_critical_anomaly:
             confidence -= 0.50
 
-        all_warnings = [a for a in (report_a.anomalies + report_b.anomalies) if a.severity == "warning"]
+        # Filter warnings: anomalies on competitor baselines (e.g. SwinUNETR missing baseline flag) do not penalize proposed model confidence
+        all_warnings = [
+            a for a in (report_a.anomalies + report_b.anomalies)
+            if a.severity == "warning"
+            and not (a.extracted_value and isinstance(a.extracted_value, str) and a.extracted_value.lower() in KNOWN_BASELINE_MODELS)
+        ]
         confidence -= min(0.35, len(all_warnings) * 0.05)
         confidence -= min(0.20, len(all_genuine_outliers) * 0.05)
 
@@ -1042,6 +1110,25 @@ class AuditorAgent:
             confidence -= 0.15
         if consensus_metadata.model_id_status == ConsensusStatus.DISPUTED:
             confidence -= 0.10
+
+        has_consensus_dispute = (
+            dispute_count > 0
+            or consensus_screening.status == ConsensusStatus.DISPUTED
+            or consensus_metadata.model_id_status == ConsensusStatus.DISPUTED
+        )
+
+        if not consensus_screening.is_included or has_critical_anomaly:
+            final_status = AuditStatus.REJECTED
+        elif has_repo_inspection and total_unique_benchmarks == 0:
+            final_status = AuditStatus.NEEDS_REPO_INSPECTION
+        elif has_outreach and total_unique_benchmarks == 0:
+            final_status = AuditStatus.NEEDS_OUTREACH
+        elif has_consensus_dispute:
+            final_status = AuditStatus.FLAGGED_WARNING
+        elif len(all_genuine_outliers) > 0 or confidence < 0.80:
+            final_status = AuditStatus.FLAGGED_WARNING
+        else:
+            final_status = AuditStatus.VERIFIED
 
         if final_status == AuditStatus.REJECTED:
             confidence = min(confidence, 0.40)

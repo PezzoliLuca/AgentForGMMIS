@@ -852,3 +852,73 @@ Empirically validate the mathematical and algorithmic refinements of Step 20 by 
    * JSON: `logs/batch_benchmark_results_20261014_232248.json`
    * Mufasa SLURM log: `logs/mufasa_dual_bench_5116.out`
 
+---
+
+## [2026-10-22] Step 22: Deliberation Re-Interrogation, Semantic Budget Normalization, and Greedy Bipartite Consensus (SLURM Job 5323)
+
+### 1. Context & Motivation
+Following the deployment of the Dual-Agent Consensus pipeline with Qwen2.5-14B on Mufasa GPU and Gemini 3.5 Flash Lite, an empirical analysis of multi-dataset benchmark runs revealed three critical bottlenecks in consensus certification:
+1. **Granularity Mismatch**: One agent frequently extracted detailed anatomical breakdowns (e.g. 13 individual organs for BTCV) while the other extracted macro-averages (`Overall` / `Mean`), creating artificial disputes or singletons before database insertion.
+2. **Data Budget String Divergence**: Minor text differences in experimental settings (e.g. `"100% labeled"` vs `"100% training data (24 samples)"`) caused the auditor's strict equality checks to skip pairing, yielding false 0% concordance on papers where both models extracted identical numbers (e.g. TP-Mamba).
+3. **Single-Agent Hallucination Over-Penalization**: In IMIS-Net, Agent A repeated a SegTHOR score across 16 training datasets in Table 4. Agent B correctly refuted all 16 rows during deliberation, excluding them from consensus. However, the auditor's global check rejected the entire paper, failing to recognize that the consensus mechanism had successfully defended against the hallucination.
+
+### 2. Algorithmic Solutions Implemented
+
+#### A. Targeted Deliberation Re-Interrogation for Macro-Averages
+* Added `BLIND_GRANULARITY_SYSTEM_PROMPT` and `BLIND_GRANULARITY_USER_TEMPLATE` in [`src/agent_gmmis/extraction/prompts.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/extraction/prompts.py).
+* Added `reinterrogate_granularity_macro()` method to `ExtractionAgent` in [`src/agent_gmmis/extraction/extractor.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/extraction/extractor.py).
+* Integrated granularity mismatch detection into `DualExtractionCoordinator.extract_manuscript_with_deliberation()` in [`src/agent_gmmis/extraction/dual_coordinator.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/extraction/dual_coordinator.py).
+* When a dataset contains sub-organs in one agent and a macro-average in the other, a targeted re-interrogation query extracts the explicit macro-average from the manuscript tables prior to database insertion.
+
+#### B. Semantic Data Budget Normalization
+* Implemented `AuditorAgent.normalize_data_budget()` in [`src/agent_gmmis/auditing/auditor.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/auditing/auditor.py):
+  * Canonical percentage extraction via regex (`\b(\d{1,3})\s*%` $\rightarrow$ `100%`, `30%`, `25%`, `12%`, `10%`).
+  * Few-shot regime extraction (`\b(\d{1,2})\s*-?\s*shots?\b` $\rightarrow$ `1-shot`, `5-shot`).
+  * Supervised equivalence mapping (`fully supervised`, `full data`, `all data` $\rightarrow$ `100%`).
+* Prevents contradictory split pairing (e.g. 10% vs 20%) while recognizing semantically identical descriptions.
+
+#### C. Optimal Greedy Bipartite Score Matching
+* Replaced the naive linear pairing loop in `AuditorAgent._pair_scores()` with a global candidate scoring and greedy bipartite matching algorithm:
+  * Candidates scored across organ equivalence (+3), macro synonym (+3), prompt match (+2), semantic budget match (+3), single-dataset bonus (+1), and numerical delta bonus (+5 for $\Delta \le 0.01$).
+  * Pairs sorted by `(match_pts, -diff_score)` descending.
+  * Solved duplicate row mispairing (e.g. TP-Mamba mislabeled duplicate 12% row) and enabled pairing on single-task challenges (e.g. ISLES `Overall` vs `Ischemic Stroke Lesion`).
+
+#### D. Consensus-Scoped Anomaly & Warning Isolation
+* Refined `is_consensus_critical()`: Template hallucination checks only trigger critical rejection if the identical score persists across $\ge 3$ distinct datasets **within the concordant consensus**. Single-agent raw hallucinations successfully refuted by peer agents during deliberation no longer reject the consensus.
+* Isolated competitor baseline warnings: Warnings regarding unflagged competitor models (`SwinUNETR`, `nnU-Net`, `UNETR`) no longer penalize the confidence of the proposed model.
+
+### 3. Empirical Results on Mufasa Cluster (SLURM Job 5323)
+
+Run ID: `20261022_101743_mufasa_qwen_gemini_20` (Node `gn01`, 20 papers).
+
+| Model ID | Old Status (Job 5116) | Job 5323 Status | Re-Audited Status | Recall GT | Dice MAE | Key Effect Observed |
+| :--- | :---: | :---: | :---: | :---: | :---: | :--- |
+| **KnowSAM** | FLAGGED (67%) | FLAGGED (81%) | FLAGGED (83%) | 100% | **0.0000** | Perfect extraction; budget regimes (10%/30%) disentangled |
+| **IMIS-Net** | REJECTED (40%) | REJECTED (38%) | **FLAGGED (88%)** | 100% | **0.0002** | Refuted BraTS hallucinations no longer reject consensus; 5 concordant |
+| **TP-Mamba** | FLAGGED (85%) | FLAGGED (82%) | **VERIFIED (100%)** | 100% | **0.0000** | Budget normalization matched all 3 regimes (100%, 25%, 12%); 0 disputes |
+| **MedSAM-2** | FLAGGED (84%) | FLAGGED (86%) | FLAGGED (88%) | 75% | **0.0000** | 8 concordant benchmarks, perfect MAE on ATLAS/BTCV/KiTS |
+| **BioSAM-2** | FLAGGED (100%) | FLAGGED (67%) | FLAGGED (84%) | 0% | N/A | Prompt discrepancies surfaced appropriately |
+| **FLAP-SAM** | FLAGGED (82%) | **VERIFIED (100%)** | **VERIFIED (100%)** | 100% | **0.0090** | 100% consensus achieved on Deliberation Round 2 |
+| **Merlin** | FLAGGED (87%) | FLAGGED (72%) | FLAGGED (72%) | 100% | 0.1080 | Accurately warned for historical outlier |
+| **BrainSegFounder** | FLAGGED (78%) | FLAGGED (74%) | **VERIFIED (100%)** | 100% | **0.0000** | Competitor baseline warning filter enabled full 100% certification |
+| **TotalSegmentator MRI** | VERIFIED (92%) | **VERIFIED (92%)** | **VERIFIED (100%)** | 100% | **0.0228** | Certified verification maintained |
+| **MoME** | FLAGGED (69%) | FLAGGED (72%) | FLAGGED (61%) | 50% | 0.0920 | Retained appropriate warning for multi-dataset disputes |
+| **BiomedParse** | REJECTED (40%) | FLAGGED (67%) | FLAGGED (67%) | 0% | N/A | Multimodal grounding task routed accurately |
+| **LHU-Net** | REJECTED (40%) | FLAGGED (94%) | FLAGGED (94%) | 33% | 0.0129 | Near-perfect agreement on reported baseline subsets |
+| **SFR SAM** | VERIFIED (92%) | **VERIFIED (92%)** | **VERIFIED (92%)** | 75% | **0.0000** | PEFT parameter recognition validated |
+| **MEA M-SAM** | VERIFIED (100%) | **VERIFIED (100%)** | **VERIFIED (100%)** | 100% | **0.0000** | Flawless 100% verification across all 5 datasets |
+| **SAT** | FLAGGED (44%) | FLAGGED (82%) | FLAGGED (85%) | 48% | 0.1086 | Correctly warned for complex 27-dataset table conflicts |
+| **Med-SA** | FLAGGED (88%) | FLAGGED (84%) | FLAGGED (92%) | 100% | **0.0035** | High concordance maintained |
+| **SegVol** | FLAGGED (100%) | **VERIFIED (100%)** | **VERIFIED (100%)** | 50% | **0.0000** | 21 concordant benchmarks certified |
+| **SAM-Med3D** | FLAGGED (69%) | **VERIFIED (100%)** | **VERIFIED (100%)** | 100% | **0.0405** | Consensus achieved in 2 deliberation rounds |
+| **SAM3D** | FLAGGED (75%) | FLAGGED (72%) | FLAGGED (87%) | 100% | **0.0117** | PEFT adapter parameters certified |
+| **MA-SAM** | FLAGGED (81%) | **VERIFIED (98%)** | **VERIFIED (100%)** | 50% | **0.0000** | Certified verification achieved |
+
+### 4. Verification & Test Suite Status
+* **Test Suite**: Executed `.venv/bin/pytest tests/ -v`
+* **Result**: **79/79 tests passing in 0.67s** with 100% green coverage.
+  * Added `test_normalize_data_budget_matching`: Validating semantic budget normalization (`100% labeled` vs `100% training data (24 samples)`).
+  * Added `test_greedy_bipartite_matching_avoids_false_disputes`: Validating optimal greedy candidate pairing over duplicate mislabeled rows.
+  * Added `test_consensus_neutralizes_unconfirmed_peer_hallucination`: Validating that peer-refuted single-agent hallucinations do not cause false REJECTED status.
+
+

@@ -854,3 +854,97 @@ class TestDualExtractionDeliberation:
         concordant_btcv = [cs for cs in final_report.consensus_scores if cs.canonical_dataset_name.lower() == "btcv" and cs.status == ConsensusStatus.CONCORDANT]
         assert len(concordant_btcv) >= 1
         assert final_report.dispute_count == 0
+
+    def test_normalize_data_budget_matching(self, auditor):
+        """Verifies that differently worded data budget strings with the same percentage or shot match concordantly."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        data_a = ExtractedPaperData(
+            paper_title="TP-Mamba: Topology-Preserving Mamba for Medical Image Segmentation",
+            proposed_model_id="TP-Mamba",
+            visual_backbone="Mamba",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8480, data_budget_or_setting="100% labeled"),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.7970, data_budget_or_setting="25% labeled"),
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="TP-Mamba: Topology-Preserving Mamba for Medical Image Segmentation",
+            proposed_model_id="TP-Mamba",
+            visual_backbone="Mamba",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8480, data_budget_or_setting="100% training data (24 samples)"),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.7970, data_budget_or_setting="25% training data (6 samples)"),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+        assert report.paired_count == 2
+        assert report.concordant_count == 2
+        assert report.dispute_count == 0
+        assert report.status == AuditStatus.VERIFIED
+
+    def test_greedy_bipartite_matching_avoids_false_disputes(self, auditor):
+        """Checks that candidates with identical scores pair together even if duplicate organ rows exist."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        data_a = ExtractedPaperData(
+            paper_title="TP-Mamba",
+            proposed_model_id="TP-Mamba",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.8480, data_budget_or_setting="12% labeled"),  # Duplicate/mislabeled row
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.6580, data_budget_or_setting="12% labeled"),  # True row
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="TP-Mamba",
+            proposed_model_id="TP-Mamba",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Overall", dice_score=0.6580, data_budget_or_setting="12% training data"),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+        assert report.concordant_count == 1
+        assert report.dispute_count == 0
+        assert report.unconfirmed_count == 1
+
+    def test_consensus_neutralizes_unconfirmed_peer_hallucination(self, auditor):
+        """Single-agent cloned score hallucination refuted by peer does not reject the consensus if valid benchmarks agree."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        # Agent A has valid SegThor AND a repeated score across training sets
+        data_a = ExtractedPaperData(
+            paper_title="IMIS-Net",
+            proposed_model_id="IMIS-Net",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="SegThor", organ_or_task="Overall", dice_score=0.8920),
+                RawExtractedScore(dataset_name="BraTS2018", organ_or_task="Overall", dice_score=0.8920),
+                RawExtractedScore(dataset_name="BraTS2019", organ_or_task="Overall", dice_score=0.8920),
+                RawExtractedScore(dataset_name="BraTS2020", organ_or_task="Overall", dice_score=0.8920),
+                RawExtractedScore(dataset_name="BraTS2021", organ_or_task="Overall", dice_score=0.8920),
+            ],
+        )
+
+        # Agent B only extracted the true valid benchmark
+        data_b = ExtractedPaperData(
+            paper_title="IMIS-Net",
+            proposed_model_id="IMIS-Net",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="SegThor", organ_or_task="Overall", dice_score=0.8920),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+        # Consensus should accept SegThor and not be REJECTED because BraTS was refuted
+        assert report.concordant_count == 1
+        assert report.status != AuditStatus.REJECTED
+
