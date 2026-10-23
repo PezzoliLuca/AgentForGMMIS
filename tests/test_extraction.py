@@ -124,6 +124,47 @@ class TestExtractionSchemas:
         assert len(data.extracted_scores) == 2
         assert data.screening.is_included is True
 
+    def test_chain_of_thought_and_derivation_rationale(self):
+        """Verifies ExtractionThoughtProcess and derivation_rationale serialization and deserialization."""
+        from agent_gmmis.extraction.schemas import ExtractionThoughtProcess
+
+        tp = ExtractionThoughtProcess(
+            proposed_model_identification="The paper proposes KnowSAM, a semi-supervised SAM distillation model.",
+            primary_benchmark_tables="Table 3 reports SOTA comparison on BCSS; Table 6 reports Kvasir.",
+            peak_performance_logic="For BCSS, 30% labeled data gives peak DSC 0.7269 over 1% and 10%.",
+            multitask_or_macro_averages="Using the macro-average Overall row from Table 3.",
+            ambiguities_or_caveats="No standard deviation reported in Table 6.",
+        )
+        score = RawExtractedScore(
+            dataset_name="BCSS",
+            organ_or_task="Overall",
+            derivation_rationale="Extracted from Table 3, row KnowSAM (Ours), column 30% labeled data.",
+            dice_score=0.7269,
+            table_or_section_ref="Table 3",
+        )
+        data = ExtractedPaperData(
+            thought_process=tp,
+            paper_title="Learnable Prompting SAM-induced Knowledge Distillation",
+            proposed_model_id="KnowSAM",
+            screening=InclusionCriteriaCheck(
+                is_3d=True,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[score],
+        )
+
+        assert data.thought_process is not None
+        assert data.thought_process.proposed_model_identification.startswith("The paper proposes KnowSAM")
+        assert data.extracted_scores[0].derivation_rationale.startswith("Extracted from Table 3")
+
+        # Verify JSON round-trip serialization
+        raw_json = data.model_dump_json()
+        restored = ExtractedPaperData.model_validate_json(raw_json)
+        assert restored.thought_process.peak_performance_logic == tp.peak_performance_logic
+        assert restored.extracted_scores[0].derivation_rationale == score.derivation_rationale
+
 
 class TestExtractionEvaluator:
     """Verifies benchmarking extracted predictions against database ground truth."""

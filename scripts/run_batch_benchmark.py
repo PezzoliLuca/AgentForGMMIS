@@ -523,6 +523,45 @@ def main():
             ext_a = item.get("extracted_a")
             ext_b = item.get("extracted_b")
 
+            # Render Chain-of-Thought (CoT) accordion if thought_process is present
+            has_cot = (
+                (ext_a and getattr(ext_a, "thought_process", None))
+                or (ext_b and getattr(ext_b, "thought_process", None))
+                or getattr(ext, "thought_process", None)
+            )
+            if has_cot:
+                md_lines.append("<details>")
+                md_lines.append("<summary>🧠 <b>Chain-of-Thought (CoT) & Extraction Reasoning</b></summary>\n")
+                if ext_a and getattr(ext_a, "thought_process", None) and ext_a.thought_process:
+                    tp = ext_a.thought_process
+                    md_lines.append(f"**Agent A ({provider_a}):**")
+                    if tp.proposed_model_identification:
+                        md_lines.append(f"- **Model Identification**: {tp.proposed_model_identification}")
+                    if tp.primary_benchmark_tables:
+                        md_lines.append(f"- **Primary Tables**: {tp.primary_benchmark_tables}")
+                    if tp.peak_performance_logic:
+                        md_lines.append(f"- **Peak Performance Logic**: {tp.peak_performance_logic}")
+                    if tp.multitask_or_macro_averages:
+                        md_lines.append(f"- **Macro-Averages**: {tp.multitask_or_macro_averages}")
+                    if tp.ambiguities_or_caveats:
+                        md_lines.append(f"- **Ambiguities / Caveats**: {tp.ambiguities_or_caveats}")
+                    md_lines.append("")
+                if is_dual and ext_b and getattr(ext_b, "thought_process", None) and ext_b.thought_process:
+                    tp = ext_b.thought_process
+                    md_lines.append(f"**Agent B ({provider_b}):**")
+                    if tp.proposed_model_identification:
+                        md_lines.append(f"- **Model Identification**: {tp.proposed_model_identification}")
+                    if tp.primary_benchmark_tables:
+                        md_lines.append(f"- **Primary Tables**: {tp.primary_benchmark_tables}")
+                    if tp.peak_performance_logic:
+                        md_lines.append(f"- **Peak Performance Logic**: {tp.peak_performance_logic}")
+                    if tp.multitask_or_macro_averages:
+                        md_lines.append(f"- **Macro-Averages**: {tp.multitask_or_macro_averages}")
+                    if tp.ambiguities_or_caveats:
+                        md_lines.append(f"- **Ambiguities / Caveats**: {tp.ambiguities_or_caveats}")
+                    md_lines.append("")
+                md_lines.append("</details>\n")
+
             paper_entry = {
                 "model_id": mid,
                 "paper_title": ext.paper_title,
@@ -550,6 +589,7 @@ def main():
                     "visual_backbone": ext_a.visual_backbone,
                     "millions_of_parameters": ext_a.millions_of_parameters,
                     "code_repository_url": ext_a.code_repository_url,
+                    "thought_process": ext_a.thought_process.model_dump() if getattr(ext_a, "thought_process", None) else None,
                     "extracted_scores_count": len(ext_a.extracted_scores),
                     "scores": [
                         {
@@ -559,6 +599,7 @@ def main():
                             "prompt": s.prompt_type,
                             "table_ref": s.table_or_section_ref,
                             "is_baseline": s.is_baseline_comparison,
+                            "derivation_rationale": getattr(s, "derivation_rationale", None),
                         }
                         for s in ext_a.extracted_scores
                     ],
@@ -568,6 +609,7 @@ def main():
                     "visual_backbone": ext_b.visual_backbone,
                     "millions_of_parameters": ext_b.millions_of_parameters,
                     "code_repository_url": ext_b.code_repository_url,
+                    "thought_process": ext_b.thought_process.model_dump() if getattr(ext_b, "thought_process", None) else None,
                     "extracted_scores_count": len(ext_b.extracted_scores),
                     "scores": [
                         {
@@ -577,6 +619,7 @@ def main():
                             "prompt": s.prompt_type,
                             "table_ref": s.table_or_section_ref,
                             "is_baseline": s.is_baseline_comparison,
+                            "derivation_rationale": getattr(s, "derivation_rationale", None),
                         }
                         for s in ext_b.extracted_scores
                     ],

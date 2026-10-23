@@ -921,4 +921,48 @@ Run ID: `20261022_101743_mufasa_qwen_gemini_20` (Node `gn01`, 20 papers).
   * Added `test_greedy_bipartite_matching_avoids_false_disputes`: Validating optimal greedy candidate pairing over duplicate mislabeled rows.
   * Added `test_consensus_neutralizes_unconfirmed_peer_hallucination`: Validating that peer-refuted single-agent hallucinations do not cause false REJECTED status.
 
+---
+
+## [2026-10-23] — Step 14: 100% On-Premise Dual-Local Benchmark & Schema-Embedded Chain-of-Thought (CoT)
+
+### 1. Objective
+1. Transition the dual-agent architecture from a hybrid cloud/HPC dependency (Qwen 14B on Mufasa + Google Gemini 2.5 Flash Lite) to a **100% sovereign, on-premise dual open-weights model pipeline** running concurrently on a single 20 GB GPU slice on the DEIB Mufasa cluster (`gpu:3g.20gb:1` / `gpu:4g.20gb:1`).
+2. Implement **Schema-Embedded Chain-of-Thought (CoT)** reasoning within the structured extraction layer to enforce autoregressive deliberation before metric emission, mitigating template hallucinations and providing full interpretability for thesis experimental analysis.
+
+### 2. Architecture & Design Decisions
+
+#### A. 100% On-Premise Dual vLLM Co-location on 20 GB MIG GPU
+* **Symmetric Local Model Pair**:
+  * **Agent A**: `Qwen/Qwen2.5-7B-Instruct-AWQ` (Port 8000).
+  * **Agent B**: `hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4` (Port 8001).
+* **VRAM Allocation**: Each vLLM instance allocated `gpu_memory_utilization = 0.43`, occupying ~12.2 GB combined static weights and leaving ~7.8 GB dynamic KV cache headroom.
+* **Context Budget Optimization**:
+  * Calibrated dynamic output tokens (`max_needed_output = 2800` for `ExtractedPaperData`, `800` for deliberation).
+  * Implemented proactive middle-text manuscript trimming in `LLMClient.generate_structured()` if `prompt_tokens >= max_model_len - 1600`, preventing fatal vLLM 400 Bad Request context boundary errors.
+* **Empirical Execution (Run ID `20261022_122155_mufasa_dual_local_20`)**:
+  * Successfully processed all **20 / 20 papers with 0 crashes, 0 timeouts, and 0 errors**.
+  * Completed in **30.4 minutes** (~91.1s per paper, ~15% faster than cloud hybrid).
+  * Achieved **Dice MAE of 0.0381** (~3.8% error vs human ground truth) and **70.0% dataset recall**.
+
+#### B. Schema-Embedded Chain-of-Thought (CoT) Engine
+* **Theoretical Rationale**: Autoregressive transformer generation is strictly causal (left-to-right). When structured JSON response models place notes or rationales at the *end* of an object, scalar tokens (such as `dice_score`) are emitted prior to reflection, leading to ungrounded template copying or column misassignment. Placing structured reasoning *first* forces the LLM's self-attention heads to attend over its analytical breakdown when producing subsequent quantitative metrics.
+* **Pydantic Schema Enhancements**:
+  * [`ExtractionThoughtProcess`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/extraction/schemas.py): Added as the **first property** of `ExtractedPaperData`, capturing:
+    * `proposed_model_identification`: Disentangling proposed model from baselines/competitors (`nnU-Net`, `SwinUNETR`).
+    * `primary_benchmark_tables`: Identifying primary comparative tables vs internal ablation sweeps.
+    * `peak_performance_logic`: Documenting maximum achievable DSC logic and prompt regimes (bbox vs point prompts).
+    * `multitask_or_macro_averages`: Explaining selection of overall macro-averages vs class-specific sub-scores.
+    * `ambiguities_or_caveats`: Explicitly noting missing data or ambiguous reporting.
+  * [`RawExtractedScore.derivation_rationale`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/src/agent_gmmis/extraction/schemas.py): Added per-score reasoning field citing the exact table, row, column, and prompt regime.
+* **Prompt Conditioning**: Updated `EXTRACTION_SYSTEM_PROMPT` and `EXTRACTION_USER_PROMPT_TEMPLATE` to mandate completing `thought_process` prior to structured metric generation.
+* **Artifact Logging & Visualization**:
+  * Updated `run_logger.py` and `run_batch_benchmark.py` to persist `thought_process` across `agent_a_extracted.json`, `agent_b_extracted.json`, and `benchmark_results.json`.
+  * Added collapsible `<details><summary>🧠 Chain-of-Thought (CoT) & Extraction Reasoning</summary>...</details>` blocks in `benchmark_report.md` for interactive thesis inspection.
+
+### 3. Verification & Test Suite Status
+* **Test Suite**: Executed `.venv/bin/pytest tests/ -v`
+* **Result**: **81/81 tests passing in 0.53s** with 100% green coverage.
+  * Added `test_chain_of_thought_and_derivation_rationale` in [`tests/test_extraction.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_extraction.py): Validates round-trip serialization/deserialization of `ExtractionThoughtProcess` and `RawExtractedScore.derivation_rationale`.
+
+
 

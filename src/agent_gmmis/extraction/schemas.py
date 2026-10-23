@@ -5,11 +5,40 @@ from pydantic import BaseModel, Field, field_validator
 from agent_gmmis.data.models import InclusionCriteriaCheck
 
 
+class ExtractionThoughtProcess(BaseModel):
+    """Structured chain-of-thought (CoT) reasoning executed by the agent before generating extracted metrics."""
+
+    proposed_model_identification: Optional[str] = Field(
+        None,
+        description="Reasoning identifying the primary proposed model vs baselines and competitors (e.g. SwinUNETR, nnU-Net)",
+    )
+    primary_benchmark_tables: Optional[str] = Field(
+        None,
+        description="Analysis of key comparative benchmark tables vs internal ablation tables in the manuscript",
+    )
+    peak_performance_logic: Optional[str] = Field(
+        None,
+        description="Rationale explaining the selection of maximum achievable Dice scores and prompt regimes (e.g. box vs points)",
+    )
+    multitask_or_macro_averages: Optional[str] = Field(
+        None,
+        description="Explanation of macro-averages/overall means vs individual class/organ sub-scores",
+    )
+    ambiguities_or_caveats: Optional[str] = Field(
+        None,
+        description="Any ambiguities, missing numbers, or potential hallucination risks noticed in the text/tables",
+    )
+
+
 class RawExtractedScore(BaseModel):
     """A raw evaluation score extracted directly from paper text or tables."""
 
     dataset_name: str = Field(..., description="Name of dataset as mentioned in the paper (e.g. BraTS, BTCV, AMOS)")
     organ_or_task: str = Field(..., description="Target anatomy or lesion (e.g. Liver, Brain Tumor, Multi-organ mean)")
+    derivation_rationale: Optional[str] = Field(
+        None,
+        description="Step-by-step reasoning explaining which table, row, column, prompt, or setting this exact score was derived from",
+    )
     dice_score: Optional[float] = Field(
         None,
         description="Dice Similarity Coefficient, normalized to [0.0, 1.0]. None if only reported graphically without numerical value.",
@@ -68,6 +97,10 @@ class RawExtractedScore(BaseModel):
 class ExtractedPaperData(BaseModel):
     """Complete structured extraction result produced by ExtractionAgent."""
 
+    thought_process: Optional[ExtractionThoughtProcess] = Field(
+        None,
+        description="Mandatory pre-extraction Chain-of-Thought reasoning analyzing proposed model, key tables, and peak performance logic",
+    )
     paper_title: str = Field(..., description="Title of the paper")
     proposed_model_id: str = Field(..., description="Short identifier of the proposed model (e.g. MedSAM, BioSAM-2)")
     proposed_model_full_title: Optional[str] = Field(None, description="Full publication title")

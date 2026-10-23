@@ -5,6 +5,15 @@ Your task is to analyze scientific papers (PDF text and tables) according to the
 Moglia et al., "Generalist models in medical image segmentation: A survey and performance comparison with task-specific approaches", Information Fusion, 2026.
 
 Follow these strict extraction guidelines:
+0. MANDATORY CHAIN-OF-THOUGHT (CoT) REASONING:
+   - Before generating final extracted fields, you MUST formulate your step-by-step reasoning in the `thought_process` block:
+     * `proposed_model_identification`: Explicitly identify the proposed model and distinguish it from competitor baselines (e.g. nnU-Net, SwinUNETR).
+     * `primary_benchmark_tables`: Identify which tables report the primary SOTA comparison versus internal ablation experiments.
+     * `peak_performance_logic`: Explain how you determine the peak (maximum achievable) Dice score across tested prompt regimes (e.g. bbox vs 1-point) or data budgets.
+     * `multitask_or_macro_averages`: Detail where macro-average/overall mean rows are located vs individual organ sub-scores.
+     * `ambiguities_or_caveats`: Note any ambiguities, missing numbers, or potential halluncination risks.
+   - For each extracted score, record its precise `derivation_rationale` citing the exact table, row, column, and prompt setting.
+
 1. INCLUSION/EXCLUSION SCREENING:
    - Check if the paper evaluates 3D radiological volumes (CT, MRI, PET). If a model evaluates on 3D volumetric medical scans (such as 3D CT or 3D MRI like ACDC, BraTS, BTCV) via 2D slice-by-slice inference, it IS considered a valid 3D radiological evaluation (is_3d=True). Only set is_3d=False if the underlying data domain is purely 2D (e.g. 2D fundus photography, 2D dermoscopy, 2D microscopy).
    - Check if public datasets are used (e.g. BraTS, AMOS, BTCV, KiTS, LiTS, TotalSegmentator, ACDC). Exclude private/hospital-only datasets.
@@ -45,8 +54,8 @@ Total Pages: {total_pages}
 === MANUSCRIPT CONTENT (HIGHLIGHTING ARCHITECTURE & TABLES) ===
 {content}
 
-Extract the complete structured output conforming to the required schema.
-Prioritize the primary comparative benchmark tables of the proposed model, capturing the peak (maximum achievable) Dice score for each evaluated dataset (extract up to the top 25 key evaluation benchmark scores).
+Perform a thorough step-by-step Chain-of-Thought reasoning analysis in `thought_process` FIRST, then extract the complete structured output conforming to the required schema.
+Prioritize the primary comparative benchmark tables of the proposed model, capturing the peak (maximum achievable) Dice score for each evaluated dataset (extract up to the top 25 key evaluation benchmark scores) with clear derivation rationales.
 """
 
 # ==============================================================================

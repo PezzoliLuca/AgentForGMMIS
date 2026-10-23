@@ -198,11 +198,11 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         # Calculate realistic output token budget for structured JSON response:
-        # ExtractedPaperData needs at most ~2200 tokens (even for 40+ benchmark rows)
-        # Reinterrogation responses need at most ~600 tokens.
+        # ExtractedPaperData needs at most ~2800 tokens (including thought_process and 30+ benchmark rows)
+        # Reinterrogation responses need at most ~800 tokens.
         # Requesting 8192 tokens artificially deprives the prompt of context in 16k/20k models.
         resp_name = getattr(response_model, "__name__", "")
-        max_needed_output = 2200 if resp_name == "ExtractedPaperData" else 800
+        max_needed_output = 2800 if resp_name == "ExtractedPaperData" else 800
 
         # Robust JSON-object Schema prompt for vLLM / Mufasa / Ollama
         schema_json = json.dumps(response_model.model_json_schema(), indent=2)
