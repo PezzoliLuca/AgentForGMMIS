@@ -200,28 +200,38 @@ class LLMClient:
         # Calculate realistic output token budget for structured JSON response:
         # ExtractedPaperData needs at most ~2800 tokens (including thought_process and 30+ benchmark rows)
         # Reinterrogation responses need at most ~800 tokens.
-        # Requesting 8192 tokens artificially deprives the prompt of context in 16k/20k models.
         resp_name = getattr(response_model, "__name__", "")
         max_needed_output = 2800 if resp_name == "ExtractedPaperData" else 800
 
-        # Robust JSON-object Schema prompt for vLLM / Mufasa / Ollama
-        schema_json = json.dumps(response_model.model_json_schema(), indent=2)
+        # Clean and compact schema representation to preserve context tokens
+        raw_schema = response_model.model_json_schema()
+        def _compact_schema_dict(d: Any) -> Any:
+            if isinstance(d, dict):
+                return {k: _compact_schema_dict(v) for k, v in d.items() if k not in ("title", "default")}
+            elif isinstance(d, list):
+                return [_compact_schema_dict(v) for v in d]
+            return d
+
+        compact_schema = _compact_schema_dict(raw_schema)
+        schema_json = json.dumps(compact_schema, separators=(",", ":"))
 
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
         approx_tokens = int(total_chars / 2.8) + 400
         context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
 
-        # If prompt + schema approaches or exceeds context window, proactively trim middle of manuscript
-        if approx_tokens > context_limit - 1600 and len(prompt) > 6000:
-            excess_chars = int((approx_tokens - (context_limit - 2200)) * 2.8)
+        # Guarantee at least max_needed_output tokens of generation headroom by trimming prompt if needed
+        required_headroom = max_needed_output + 300
+        if approx_tokens > context_limit - required_headroom and len(prompt) > 4000:
+            excess_tokens = approx_tokens - (context_limit - required_headroom)
+            excess_chars = int(excess_tokens * 3.0) + 400
             mid = len(prompt) // 2
-            half_trim = min(mid - 1000, max(1000, excess_chars // 2))
+            half_trim = min(mid - 500, max(500, excess_chars // 2))
             prompt = prompt[: mid - half_trim] + "\n\n[... middle text trimmed to respect context limit ...]\n\n" + prompt[mid + half_trim :]
             messages[-1]["content"] = prompt
             total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
             approx_tokens = int(total_chars / 2.8) + 400
 
-        safe_max_tokens = min(max_needed_output, max(256, context_limit - approx_tokens - 100))
+        safe_max_tokens = min(max_needed_output, max(512, context_limit - approx_tokens - 100))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
         use_beta_parse = self.config.provider not in ("mufasa", "ollama")
@@ -262,8 +272,8 @@ class LLMClient:
                 ctx_len = int(m_ctx.group(1)) if m_ctx else 16384
                 inp_len = int(m_inp.group(1)) if m_inp else approx_tokens
 
-                if inp_len + 256 <= ctx_len:
-                    retry_tokens = max(256, min(2048, ctx_len - inp_len - 64))
+                if inp_len + 512 <= ctx_len:
+                    retry_tokens = max(512, min(max_needed_output, ctx_len - inp_len - 64))
                     response = self._openai_client.chat.completions.create(
                         model=self.config.model,
                         messages=augmented_messages,
@@ -274,7 +284,7 @@ class LLMClient:
                 else:
                     # Trim middle of the prompt to fit within context length
                     user_content = augmented_messages[-1]["content"]
-                    excess_chars = int((inp_len - (ctx_len - 1500)) * 3.5)
+                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 500))) * 3.5)
                     if len(user_content) > excess_chars + 1000:
                         mid = len(user_content) // 2
                         half_trim = excess_chars // 2
@@ -288,7 +298,7 @@ class LLMClient:
                             messages=augmented_messages,
                             response_format={"type": "json_object"},
                             temperature=self.config.temperature,
-                            max_tokens=1024,
+                            max_tokens=max_needed_output,
                         )
                     else:
                         raise exc
@@ -307,30 +317,47 @@ class LLMClient:
         try:
             return response_model.model_validate_json(raw_text)
         except Exception:
-            # Bulletproof healing: if JSON was truncated inside an array of benchmark objects,
-            # rewind to the last completely formed object '}' and close open brackets properly
+            # Bulletproof healing: repair unclosed quotes, remove trailing commas, and balance bracket stack
             s = raw_text.strip()
-            last_brace = s.rfind("}")
-            if last_brace != -1:
-                truncated = s[:last_brace + 1]
-                open_sq = truncated.count("[") - truncated.count("]")
-                open_cur = truncated.count("{") - truncated.count("}")
-                candidate = truncated + ("]" * max(0, open_sq)) + ("}" * max(0, open_cur))
-                try:
-                    return response_model.model_validate_json(candidate)
-                except Exception:
-                    pass
+            in_string = False
+            escape = False
+            for char in s:
+                if char == "\\" and not escape:
+                    escape = True
+                    continue
+                if char == '"' and not escape:
+                    in_string = not in_string
+                escape = False
 
-            # Fallback quote balancing
-            if s.count('"') % 2 != 0:
+            if in_string:
                 s += '"'
-            last_comma = s.rfind(",")
-            if last_comma != -1:
-                s = s[:last_comma]
-            open_cur = s.count("{") - s.count("}")
-            open_sq = s.count("[") - s.count("]")
-            candidate = s + ("}" * max(0, open_cur - 1)) + ("]" * max(0, open_sq)) + "}"
-            return response_model.model_validate_json(candidate)
+
+            s = re.sub(r",\s*([\]}])", r"\1", s)
+            s = re.sub(r",\s*$", "", s.strip())
+
+            stack = []
+            in_str = False
+            esc = False
+            for char in s:
+                if char == "\\" and not esc:
+                    esc = True
+                    continue
+                if char == '"' and not esc:
+                    in_str = not in_str
+                elif not in_str:
+                    if char in ("{", "["):
+                        stack.append(char)
+                    elif char == "}" and stack and stack[-1] == "{":
+                        stack.pop()
+                    elif char == "]" and stack and stack[-1] == "[":
+                        stack.pop()
+                esc = False
+
+            while stack:
+                opener = stack.pop()
+                s += "}" if opener == "{" else "]"
+
+            return response_model.model_validate_json(s)
 
     def generate_text(
         self,

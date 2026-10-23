@@ -6,13 +6,13 @@ Moglia et al., "Generalist models in medical image segmentation: A survey and pe
 
 Follow these strict extraction guidelines:
 0. MANDATORY CHAIN-OF-THOUGHT (CoT) REASONING:
-   - Before generating final extracted fields, you MUST formulate your step-by-step reasoning in the `thought_process` block:
+   - Before generating final extracted fields, you MUST formulate concise step-by-step reasoning (1-2 sentences per field, do NOT write long essays) in the `thought_process` block:
      * `proposed_model_identification`: Explicitly identify the proposed model and distinguish it from competitor baselines (e.g. nnU-Net, SwinUNETR).
      * `primary_benchmark_tables`: Identify which tables report the primary SOTA comparison versus internal ablation experiments.
      * `peak_performance_logic`: Explain how you determine the peak (maximum achievable) Dice score across tested prompt regimes (e.g. bbox vs 1-point) or data budgets.
      * `multitask_or_macro_averages`: Detail where macro-average/overall mean rows are located vs individual organ sub-scores.
-     * `ambiguities_or_caveats`: Note any ambiguities, missing numbers, or potential halluncination risks.
-   - For each extracted score, record its precise `derivation_rationale` citing the exact table, row, column, and prompt setting.
+     * `ambiguities_or_caveats`: Note any ambiguities, missing numbers, or potential hallucination risks.
+   - For each extracted score, record its precise `derivation_rationale` citing the exact table, row, column, and prompt setting (e.g. 'Table 2, row 3, bbox prompt').
 
 1. INCLUSION/EXCLUSION SCREENING:
    - Check if the paper evaluates 3D radiological volumes (CT, MRI, PET). If a model evaluates on 3D volumetric medical scans (such as 3D CT or 3D MRI like ACDC, BraTS, BTCV) via 2D slice-by-slice inference, it IS considered a valid 3D radiological evaluation (is_3d=True). Only set is_3d=False if the underlying data domain is purely 2D (e.g. 2D fundus photography, 2D dermoscopy, 2D microscopy).
