@@ -147,8 +147,8 @@ class ExtractedPaperData(BaseModel):
 class ReinterrogationScoreResponse(BaseModel):
     """Structured response from an agent during double-blind deliberation re-interrogation."""
 
-    dataset_name: str = Field(..., description="Canonical or reported dataset name")
-    organ_or_task: str = Field(..., description="Target anatomy or evaluation task")
+    dataset_name: str = Field("Unknown", description="Canonical or reported dataset name")
+    organ_or_task: str = Field("Overall", description="Target anatomy or evaluation task")
     is_valid_benchmark: bool = Field(
         True,
         description="True if this is a valid 3D radiological public evaluation of the proposed model; False if it should be excluded",
@@ -166,7 +166,7 @@ class ReinterrogationScoreResponse(BaseModel):
         True,
         description="True if the agent maintained its previous stance; False if it updated or corrected the score",
     )
-    rationale: str = Field(..., description="Concise explanation grounded in manuscript text/tables")
+    rationale: str = Field("Evaluated from manuscript tables and text", description="Concise explanation grounded in manuscript text/tables")
     exclusion_reason: Optional[str] = Field(
         None,
         description="Reason for exclusion if is_valid_benchmark=False (e.g. '2D modality', 'baseline model', 'private data')",

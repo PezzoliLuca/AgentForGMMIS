@@ -201,7 +201,7 @@ class LLMClient:
         # ExtractedPaperData needs at most ~2800 tokens (including thought_process and 30+ benchmark rows)
         # Reinterrogation responses need at most ~800 tokens.
         resp_name = getattr(response_model, "__name__", "")
-        max_needed_output = 2800 if resp_name == "ExtractedPaperData" else 800
+        max_needed_output = 3500 if resp_name == "ExtractedPaperData" else 800
 
         # Clean and compact schema representation to preserve context tokens
         raw_schema = response_model.model_json_schema()
@@ -317,8 +317,22 @@ class LLMClient:
         try:
             return response_model.model_validate_json(raw_text)
         except Exception:
-            # Bulletproof healing: repair unclosed quotes, remove trailing commas, and balance bracket stack
+            # Bulletproof healing: repair unclosed quotes, drop incomplete objects, and balance bracket stack
             s = raw_text.strip()
+
+            # Step 1: If truncated inside an array of objects (like extracted_scores),
+            # rewind to the last completely closed object `}` after the last `[`
+            last_sq = s.rfind("[")
+            if last_sq != -1:
+                last_brace_after_sq = s.rfind("}", last_sq)
+                if last_brace_after_sq != -1:
+                    candidate = s[:last_brace_after_sq + 1] + "]}"
+                    try:
+                        return response_model.model_validate_json(candidate)
+                    except Exception:
+                        pass
+
+            # Step 2: Handle unclosed string literals
             in_string = False
             escape = False
             for char in s:
@@ -332,9 +346,13 @@ class LLMClient:
             if in_string:
                 s += '"'
 
+            # Step 3: Clean up dangling colon (key without value, e.g. "key":) or incomplete key
+            s = re.sub(r":\s*$", ": null", s.strip())
+            s = re.sub(r",\s*\"[^\":]*\"\s*$", "", s.strip())
             s = re.sub(r",\s*([\]}])", r"\1", s)
             s = re.sub(r",\s*$", "", s.strip())
 
+            # Step 4: Stack-based bracket balancer
             stack = []
             in_str = False
             esc = False
