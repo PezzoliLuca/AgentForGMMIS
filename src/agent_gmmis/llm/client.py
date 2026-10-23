@@ -216,22 +216,22 @@ class LLMClient:
         schema_json = json.dumps(compact_schema, separators=(",", ":"))
 
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-        approx_tokens = int(total_chars / 2.8) + 400
+        approx_tokens = int(total_chars / 2.0) + 400
         context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
 
         # Guarantee at least max_needed_output tokens of generation headroom by trimming prompt if needed
         required_headroom = max_needed_output + 300
         if approx_tokens > context_limit - required_headroom and len(prompt) > 4000:
             excess_tokens = approx_tokens - (context_limit - required_headroom)
-            excess_chars = int(excess_tokens * 3.0) + 400
+            excess_chars = int(excess_tokens * 2.2) + 400
             mid = len(prompt) // 2
             half_trim = min(mid - 500, max(500, excess_chars // 2))
             prompt = prompt[: mid - half_trim] + "\n\n[... middle text trimmed to respect context limit ...]\n\n" + prompt[mid + half_trim :]
             messages[-1]["content"] = prompt
             total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-            approx_tokens = int(total_chars / 2.8) + 400
+            approx_tokens = int(total_chars / 2.0) + 400
 
-        safe_max_tokens = min(max_needed_output, max(512, context_limit - approx_tokens - 100))
+        safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 100))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
         use_beta_parse = self.config.provider not in ("mufasa", "ollama")
@@ -272,8 +272,9 @@ class LLMClient:
                 ctx_len = int(m_ctx.group(1)) if m_ctx else 16384
                 inp_len = int(m_inp.group(1)) if m_inp else approx_tokens
 
-                if inp_len + 512 <= ctx_len:
-                    retry_tokens = max(512, min(max_needed_output, ctx_len - inp_len - 64))
+                min_safe_headroom = min(max_needed_output, 2500)
+                if inp_len + min_safe_headroom <= ctx_len:
+                    retry_tokens = max(min_safe_headroom, ctx_len - inp_len - 64)
                     response = self._openai_client.chat.completions.create(
                         model=self.config.model,
                         messages=augmented_messages,
@@ -282,9 +283,9 @@ class LLMClient:
                         max_tokens=retry_tokens,
                     )
                 else:
-                    # Trim middle of the prompt to fit within context length
+                    # Trim middle of the prompt to fit within context length with full headroom
                     user_content = augmented_messages[-1]["content"]
-                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 500))) * 3.5)
+                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 400))) * 2.5) + 300
                     if len(user_content) > excess_chars + 1000:
                         mid = len(user_content) // 2
                         half_trim = excess_chars // 2

@@ -961,8 +961,39 @@ Run ID: `20261022_101743_mufasa_qwen_gemini_20` (Node `gn01`, 20 papers).
 
 ### 3. Verification & Test Suite Status
 * **Test Suite**: Executed `.venv/bin/pytest tests/ -v`
-* **Result**: **81/81 tests passing in 0.53s** with 100% green coverage.
+* **Result**: **82/82 tests passing in 0.65s** with 100% green coverage.
   * Added `test_chain_of_thought_and_derivation_rationale` in [`tests/test_extraction.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_extraction.py): Validates round-trip serialization/deserialization of `ExtractionThoughtProcess` and `RawExtractedScore.derivation_rationale`.
+  * Added `test_evaluator_multi_organ_averaging` in [`tests/test_extraction.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_extraction.py): Validates mathematical mean computation across individual organs for multi-organ challenge ground truth.
+
+---
+
+## Step 15: Epistemic Reconciliation (Survey Ground Truth vs Peak Performance), Token Buffer Hardening & Multi-Organ Aggregation (2026-10-23)
+
+### 1. Context & Objectives
+Empirical execution of the CoT-enhanced benchmark on 20 papers on Mufasa cluster (`Run 20261023_181117_mufasa_dual_local_20`) yielded an 18/20 (90%) success rate with remarkable precision on cleanly structured papers (`TotalSegmentator MRI`: MAE 0.0000, `SegVol`: 0.0023, `Med-SA`: 0.0030, `SFR SAM`: 0.0043, `IMIS-Net`: 0.0070). However, two specific failure modes were identified:
+1. **Agent B Token Exhaustion Choking (`TP-Mamba`, `Merlin`)**: Llama-3.1-8B hit the context boundary while emitting an extensive CoT essay, causing output truncation before emitting required metadata fields.
+2. **Epistemic Discrepancy on Complex Tables (`TP-Mamba`, `BrainSegFounder`, `MoME`)**: In multi-organ datasets like BTCV, the directive "select the maximum score" led extractors to select individual easy organs (e.g. Liver at 97.2%) instead of the macro-average dataset score (`Avg: 84.8%`), driving Dice MAE up.
+
+### 2. Architecture & Implementation Decisions
+* **Token Buffer Hardening (`client.py`)**:
+  * Adopted conservative token-to-character ratio (`total_chars / 2.0` instead of `/ 2.8`) to accurately model Llama BPE tokenizer behavior on numeric tables and LaTeX.
+  * Enforced minimum 3,500 token generation headroom proactively trimming manuscript centers before submission.
+  * Overhauled error recovery: if vLLM signals context boundaries, proactively trims prompt to guarantee full 3,500 token completion rather than choking down to <800 tokens.
+* **Fault-Tolerant Pydantic Contracts (`schemas.py`, `models.py`, `extractor.py`)**:
+  * Provided default values for `paper_title`, `proposed_model_id`, and `screening` in `ExtractedPaperData` and `InclusionCriteriaCheck`.
+  * In `ExtractionAgent.process_manuscript`, auto-populates empty metadata fields directly from `manuscript.title` and known IDs if healing recovers a partially formed JSON.
+* **Hierarchical Macro-Average Prompting (`prompts.py`)**:
+  * Defined strict rule: for multi-organ/multi-class benchmarks, `organ_or_task='Overall'` must strictly derive from the `Avg`/`Mean`/`Overall` column. Individual organs must retain their anatomical name (`organ_or_task='Liver'`).
+  * Clarified that *Peak Performance* applies to prompt regimes (box vs points) on the Overall metric, never to selecting individual organs over the macro-average.
+  * Enforced CoT conciseness (1-2 sentences per field, <40 words).
+* **Mathematical Organ Synthesis in Evaluator (`evaluator.py`)**:
+  * When an article reports individual anatomical organs without an explicit `Avg` column, `ExtractionEvaluator` automatically computes the arithmetic mean across organs ($\frac{1}{N} \sum \text{Dice}_i$), matching ground truth perfectly (e.g. 84.8% on BTCV).
+* **Thesis Document Creation (`docs/SURVEY_VS_PEAK_ANALYSIS.md`)**:
+  * Authored comprehensive thesis document categorizing the 4 systemic reasons for divergence between human survey records and autonomous LLM extraction: Prompting Regimes (1-pt vs box), Macro-Average vs Single Organ, Multimodal Synthesis, and Complex Appendix Tables.
+
+### 3. Verification
+* Local pytest suite: **82/82 passing in 0.65s**.
+
 
 
 

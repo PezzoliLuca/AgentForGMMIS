@@ -282,3 +282,35 @@ class TestDatasetAliasResolver:
         assert report.dice_mae is not None
         assert report.dice_mae < 1e-4
 
+    def test_evaluator_multi_organ_averaging(self):
+        """Verifies evaluator computes mathematical mean across individual organs when no overall row exists."""
+        db = DatabaseManager()
+        evaluator = ExtractionEvaluator(db_manager=db)
+
+        # TP-Mamba GT for BTCV is 0.848
+        extracted = ExtractedPaperData(
+            paper_title="Tri-Plane Mamba",
+            proposed_model_id="TP-Mamba",
+            extracted_scores=[
+                RawExtractedScore(
+                    dataset_name="BTCV",
+                    organ_or_task="Liver",
+                    dice_score=0.972,
+                    is_baseline_comparison=False,
+                ),
+                RawExtractedScore(
+                    dataset_name="BTCV",
+                    organ_or_task="Spleen",
+                    dice_score=0.724,
+                    is_baseline_comparison=False,
+                ),
+            ],
+        )
+
+        report = evaluator.evaluate(extracted, ground_truth_id="TP-Mamba", compare_source="primary")
+        assert report.matched_datasets_count == 1
+        assert report.dice_mae is not None
+        # Mean of 0.972 and 0.724 is 0.848, which matches GT 0.848 exactly
+        assert abs(report.dice_mae) < 1e-3
+
+

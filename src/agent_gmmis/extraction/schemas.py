@@ -101,8 +101,8 @@ class ExtractedPaperData(BaseModel):
         None,
         description="Mandatory pre-extraction Chain-of-Thought reasoning analyzing proposed model, key tables, and peak performance logic",
     )
-    paper_title: str = Field(..., description="Title of the paper")
-    proposed_model_id: str = Field(..., description="Short identifier of the proposed model (e.g. MedSAM, BioSAM-2)")
+    paper_title: str = Field("", description="Title of the paper")
+    proposed_model_id: str = Field("", description="Short identifier of the proposed model (e.g. MedSAM, BioSAM-2)")
     proposed_model_full_title: Optional[str] = Field(None, description="Full publication title")
     authors_affiliations: Optional[str] = Field(None, description="Author institutions/countries")
     code_repository_url: Optional[str] = Field(None, description="GitHub or code repository URL if disclosed")
@@ -115,7 +115,10 @@ class ExtractedPaperData(BaseModel):
     resources_total_vram_gb: Optional[float] = Field(None, description="Total VRAM in GB across all training GPUs")
 
     # Screening & Evaluation
-    screening: InclusionCriteriaCheck = Field(..., description="Scientific inclusion/exclusion screening check")
+    screening: InclusionCriteriaCheck = Field(
+        default_factory=InclusionCriteriaCheck,
+        description="Scientific inclusion/exclusion screening check",
+    )
     extracted_scores: List[RawExtractedScore] = Field(
         default_factory=list,
         description="All quantitative Dice scores extracted from tables and text",

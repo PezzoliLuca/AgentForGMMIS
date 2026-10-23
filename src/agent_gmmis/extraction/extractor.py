@@ -111,6 +111,11 @@ class ExtractionAgent:
             system_prompt=EXTRACTION_SYSTEM_PROMPT,
         )
 
+        if not extracted_data.paper_title and manuscript.title:
+            extracted_data.paper_title = manuscript.title
+        if not extracted_data.proposed_model_id:
+            extracted_data.proposed_model_id = manuscript.title or "ProposedModel"
+
         return extracted_data
 
     def reinterrogate_discrepancy(

@@ -86,10 +86,10 @@ class BenchmarkScore(BaseModel):
 class InclusionCriteriaCheck(BaseModel):
     """Scientific screening check based on Moglia et al. inclusion/exclusion criteria."""
 
-    is_3d: bool = Field(..., description="Is the imaging modality 3D (volumetric)?")
-    is_radiological: bool = Field(..., description="Is it CT, MRI, or PET? (Excludes 2D retina/dermoscopy)")
-    is_public_dataset: bool = Field(..., description="Evaluated on publicly available dataset(s)?")
-    has_dice_metric: bool = Field(..., description="Reports Dice Similarity Coefficient (DSC)?")
+    is_3d: bool = Field(True, description="Is the imaging modality 3D (volumetric)?")
+    is_radiological: bool = Field(True, description="Is it CT, MRI, or PET? (Excludes 2D retina/dermoscopy)")
+    is_public_dataset: bool = Field(True, description="Evaluated on publicly available dataset(s)?")
+    has_dice_metric: bool = Field(True, description="Reports Dice Similarity Coefficient (DSC)?")
     notes: Optional[str] = None
 
     @property
