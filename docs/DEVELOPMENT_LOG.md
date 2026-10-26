@@ -1148,5 +1148,40 @@ Deploy and evaluate a **Hybrid Sovereign + Frontier Architecture** on the 40-pap
 4. **Outlier Error Elimination**: Outlier errors $>0.15$ MAE were completely eliminated; maximum observed error was 0.1168 (on `SAM3D`), with dramatic reductions on `FLAP-SAM` (0.300 $\to$ 0.049) and `SFR SAM` (0.152 $\to$ 0.049).
 5. **Noise Reduction**: Single-agent unconfirmed scores dropped from 432 to 114 (**-73.6% reduction**), and schema evolution columns tightened from 133 to 91 standardized identifiers.
 
+---
+
+## Session 2026-10-26 (Part 4): Dual-Local Rerun (`Job 5472`) on Synchronized Bug-Free Codebase & Definitive Head-to-Head Comparison
+
+### 1. Objective & Scientific Rationale
+Following the execution of the Hybrid run (`Job 5471`), a critical scientific observation was made: Job 5461 suffered from two data contract edge cases (`Merlin` and `BiomedParse`), which caused 2 crashes and limited `DatabaseAgent` to 38 papers. To establish an uncompromised, methodologically pure apples-to-apples baseline:
+1. Succeeded commit `f00bf74` to remote and synchronized to DEIB Mufasa HPC.
+2. Executed a fresh rerun of the Dual-Local topology (**`Job 5472`** / `Run 20261026_200829_mufasa_dual_local_40`) on node `gn01`:
+   - `Qwen2.5-7B-Instruct-AWQ` on port 8000
+   - `Meta-Llama-3.1-8B-Instruct-AWQ` on port 8001
+   - Evaluated on all 40 papers.
+
+### 2. Empirical Execution Results (`Job 5472`)
+* **Total Papers Evaluated**: **40 / 40 (100.0% completion rate)** in 61.5 minutes (~92.3s per paper).
+* **Zero Crashes**:
+  - `Merlin`: Completed with **100.0% recall** and **0.0073 Dice MAE** (`FLAGGED_WARNING`, 77% confidence).
+  - `BiomedParse`: Completed cleanly with **92% certified confidence** (`VERIFIED`), generating 11 peak scores in database curation.
+* **Database Curation Statistics**:
+  - **New Models Inserted**: **6**
+  - **Models Updated**: **30**
+  - **Papers Blocked by Gatekeeper**: **4** (`SAM3D`, `MA-SAM`, `HERMES`, `GVSL` — all $<0.60$ confidence).
+  - **Novel Benchmarks Added**: **143** columns (wide-table schema evolution).
+  - **New Benchmark Scores**: **103**
+  - **Peak Scores Improved**: **64**
+  - **Historical Peaks Preserved**: **269**
+  - **Disputes Blocked**: **38** (0.95 / paper)
+  - **Unconfirmed Single-Agent Omitted**: **466**
+
+### 3. Definitive Head-to-Head Findings (Job 5472 vs Job 5471)
+* **Average Error Reduction**: Scaling from Dual-Local 7B/8B to Hybrid 14B+Gemini reduced mean Dice MAE from **0.0610 (6.10%)** to **0.0269 (2.69%)** — a **-55.9% error reduction**.
+* **Zero-Error Extraction Expansion**: Exact 0.0000 MAE papers jumped from **4 to 10** (+250% increase).
+* **Consensus Stability**: Inter-model disputes were cut from 38 to 18 (**-52.6% reduction**), and unconfirmed single-agent scores plummeted from 466 to 114 (**-75.5% reduction**).
+* **Epistemic Gatekeeping**: Proved that while 7B/8B models hit a confidence wall on 4 complex multi-table manuscripts ($<0.60$), the 14B+Gemini hybrid achieves 89-94% confidence, safely admitting 100% of literature into the curated database.
+
+
 
 

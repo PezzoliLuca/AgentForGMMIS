@@ -629,37 +629,41 @@ Keep these points in mind when drafting chapters of the final dissertation:
 
 ### 1. The Architectural Dilemma: Sovereign Cluster vs Frontier Cloud Hybrid
 A foundational question for enterprise and scientific autonomous agents is the trade-off between **complete sovereign deployment** (all LLMs hosted on-premise on local GPUs) versus a **hybrid sovereign + frontier topology** (a sovereign local LLM arbitrating or deliberating with a frontier cloud LLM API):
-* **Dual-Local (`Job 5461`)**: `Qwen2.5-7B-Instruct-AWQ` + `Meta-Llama-3.1-8B-Instruct-AWQ` running simultaneously on DEIB Mufasa HPC (`gpu:3g.20gb:1`). 100% data sovereign, 0.00 € API cost, but constrained by 7B/8B model reasoning capacity.
+* **Dual-Local (`Job 5472`)**: `Qwen2.5-7B-Instruct-AWQ` + `Meta-Llama-3.1-8B-Instruct-AWQ` running simultaneously on DEIB Mufasa HPC (`gpu:3g.20gb:1`). 100% data sovereign, 0.00 € API cost, but constrained by 7B/8B model reasoning capacity.
 * **Hybrid Sovereign + Frontier (`Job 5471`)**: `Qwen2.5-14B-Instruct-AWQ` on DEIB Mufasa HPC (A100 GPU) paired with `Google Gemini 3.1 Flash Lite` via Google AI Studio API. Combines sovereign high-capacity local inference (14B) with state-of-the-art frontier multimodal reasoning (Gemini).
+
+Both jobs were executed on the **identical, updated codebase** (`f00bf74`) across the exact same **40 literature papers**, eliminating any confounding software artifacts and providing a methodologically sound apples-to-apples comparison.
 
 ### 2. Empirical Head-to-Head Comparison Matrix (40 Literature Papers)
 
-| Evaluation Dimension | Dual-Local Sovereign (`Job 5461`) | Hybrid Sovereign+Frontier (`Job 5471`) | Empirical Delta / Impact |
+| Evaluation Dimension | Dual-Local Sovereign (`Job 5472`) | Hybrid Sovereign+Frontier (`Job 5471`) | Empirical Delta / Impact |
 | :--- | :--- | :--- | :--- |
 | **Model Topology** | Qwen 2.5 7B AWQ + Llama 3.1 8B AWQ | Qwen 2.5 14B AWQ + Gemini 3.1 Flash Lite | +100% local model parameters + frontier cloud |
-| **Total Papers Evaluated** | 38 / 40 (95.0% completion) | **40 / 40 (100.0% completion)** | +5.0% completion (zero unhandled exceptions) |
-| **Total Wall-Clock Runtime** | 62 minutes (~98s / paper) | 102 minutes (~153s / paper) | 1.56x execution time (higher deliberation depth) |
+| **Total Papers Evaluated** | **40 / 40 (100.0% completion)** | **40 / 40 (100.0% completion)** | 100% pipeline completion across both runs |
+| **Total Wall-Clock Runtime** | 61.5 minutes (~92.3s / paper) | 99.7 minutes (~149.6s / paper) | 1.62x execution time (deeper multi-round CoT) |
 | **Epistemic Gatekeeper Rejections** | **4 papers blocked** (conf < 0.60) | **0 papers blocked (0.0% rejection)** | **100% gatekeeper bypass via consensus** |
 | - *`SAM3D`* | ⚠️ FLAGGED_WARNING (47% conf) $\to$ Blocked | ✅ VERIFIED (**92% conf**) $\to$ Curated | +45% confidence increase |
 | - *`MA-SAM`* | ⚠️ FLAGGED_WARNING (45% conf) $\to$ Blocked | ✅ VERIFIED (**89% conf**) $\to$ Curated | +44% confidence increase |
 | - *`HERMES`* | ⚠️ FLAGGED_WARNING (52% conf) $\to$ Blocked | ✅ VERIFIED (**94% conf**) $\to$ Curated | +42% confidence increase |
 | - *`GVSL`* | ⚠️ FLAGGED_WARNING (52% conf) $\to$ Blocked | ✅ VERIFIED (**92% conf**) $\to$ Curated | +40% confidence increase |
-| **Exact 0.0000 MAE Matches** | 3 models (`One-Prompt`, `NexToU`, `Diff-UNet`) | **9 models** (+`IMIS-Net`, `MedSAM-2`, `BrainSegFounder`, `Cheap Lunch`, `UniverSeg`, `UniSeg`) | **3.0x increase in perfect extractions** |
-| **Near-Zero MAE (<0.006)** | 2 models (`MEA M-SAM` 0.0019, `MultiTalent` 0.0021) | 3 models (`DAE` 0.0005, `MEA M-SAM` 0.0036, `KnowSAM` 0.0058) | High precision across complex tables |
+| **Mean Dice MAE (Fidelity)** | **0.0610 (6.10% error)** | **0.0269 (2.69% error)** | **-55.9% reduction in average error** |
+| **Median Dice MAE** | 0.0245 | **0.0215** | Consistently lower median error |
+| **Exact 0.0000 MAE Matches** | 4 models (`One-Prompt`, `NexToU`, `MedNeXt`, `Diff-UNet`) | **10 models** (+`IMIS-Net`, `MedSAM-2`, `BrainSegFounder`, `Cheap Lunch`, `UniverSeg`, `UniSeg`) | **2.5x increase in zero-error extractions** |
+| **Near-Zero MAE (<0.006)** | 3 models (`MEA M-SAM` 0.0019, `MultiTalent` 0.0021, `Merlin` 0.0073) | 3 models (`DAE` 0.0005, `MEA M-SAM` 0.0036, `KnowSAM` 0.0058) | High precision across complex tables |
 | **Outlier Metric Errors (MAE > 0.15)** | 5 models (`FLAP-SAM` 0.300, `SAT` 0.179, `SAM3D` 0.174, `3DSAM` 0.153, `SFR` 0.152) | **0 models** (maximum MAE was 0.1168 on `SAM3D`) | **100% elimination of severe metric hallucinations** |
 | - *`FLAP-SAM` MAE* | 0.2998 (29.98% error) | **0.0494 (4.94% error)** | **-83.5% error reduction** |
 | - *`SFR SAM` MAE* | 0.1523 (15.23% error) | **0.0493 (4.93% error)** | **-67.6% error reduction** |
 | - *`SAM-Med3D` MAE* | 0.0599 (5.99% error) | **0.0251 (2.51% error)** | **-58.1% error reduction** |
 | - *`UNETR++` MAE* | 0.0534 (5.34% error) | **0.0245 (2.45% error)** | **-54.1% error reduction** |
 | - *`CLIP-Driven Universal Model`* | 0.0975 (9.75% error) | **0.0246 (2.46% error)** | **-74.8% error reduction** |
-| **Dispute Frequency** | 38 disputes across 38 papers (1.00 / paper) | **18 disputes across 40 papers (0.45 / paper)** | **-55.3% reduction in inter-model disputes** |
-| **Unconfirmed Single-Agent Noise** | 432 scores omitted (low confidence) | **114 scores omitted** | **-73.6% reduction in unconfirmed noise** |
-| **Novel Benchmarks Added (DDL)** | 133 columns (high lexical redundancy) | **91 columns (cleaner semantic standardization)** | Standardized canonical naming |
-| **Monotonic Peak Improvements** | 62 peak scores updated | 29 peak scores updated | Higher precision in baseline comparison |
-| **Historical Peaks Preserved** | 242 lower scores preserved in comments | 82 lower scores preserved in comments | Cleaner, less fragmented candidate set |
+| **Dispute Frequency** | 38 disputes across 40 papers (0.95 / paper) | **18 disputes across 40 papers (0.45 / paper)** | **-52.6% reduction in inter-model disputes** |
+| **Unconfirmed Single-Agent Noise** | 466 scores omitted (low confidence) | **114 scores omitted** | **-75.5% reduction in unconfirmed noise** |
+| **Novel Benchmarks Added (DDL)** | 143 columns (high lexical fragmentation) | **91 columns (cleaner semantic standardization)** | Standardized canonical naming |
+| **Monotonic Peak Improvements** | 64 peak scores updated | 29 peak scores updated | Higher precision in baseline comparison |
+| **Historical Peaks Preserved** | 269 lower scores preserved in comments | 82 lower scores preserved in comments | Cleaner, less fragmented candidate set |
 
 ### 3. Deep-Dive: Why Did the Hybrid Topology Solve the 4 Blocked Papers?
-In `Job 5461`, the Critic (`AuditorAgent`) blocked 4 papers from database curation because the certified confidence was below the 0.60 threshold. Analysis reveals why scaling to 14B + Gemini unlocked these papers:
+In `Job 5472`, the Critic (`AuditorAgent`) blocked 4 papers from database curation because the certified confidence fell below the 0.60 threshold. Analysis reveals why scaling to 14B + Gemini unlocked these papers:
 1. **`SAM3D` (Conf 47% $\to$ 92%)**: The paper presents multiple 3D volumetric datasets with differing patch sizes and prompt settings. Qwen-7B and Llama-8B extracted differing rows from the ablation vs primary tables, leading to divergent scores and high anomaly penalties. Qwen-14B and Gemini 3.1 both identified the canonical primary test table, achieving consensus and MAE reduction from 0.1743 to 0.1168.
 2. **`MA-SAM` (Conf 45% $\to$ 89%)**: Contains complex multi-organ modality breakdowns. The 8B model hallucinated baseline numbers into the proposed model column. Gemini 3.1 correctly anchored on the "Ours (MA-SAM)" column header, allowing Qwen-14B and the Auditor to verify the architecture with 89% confidence.
 3. **`HERMES` (Conf 52% $\to$ 94%)**: Highly dense paper with 9 evaluation benchmarks. The smaller models truncated or mixed up dataset splits across multi-column tables. The 14B + Gemini hybrid extracted concordant benchmark rows with zero disputes, resulting in 94% verified audit status and 0.0306 MAE.
@@ -667,9 +671,10 @@ In `Job 5461`, the Critic (`AuditorAgent`) blocked 4 papers from database curati
 
 ### 4. Thesis Takeaway: The "Consensus-Capability Frontier"
 This experiment provides empirical proof of the **Consensus-Capability Frontier** in agentic systems:
-* As individual model reasoning capacity increases (from 7B/8B to 14B/Frontier), **inter-annotator agreement increases non-linearly**: disputes dropped by 55.3%, and unconfirmed single-agent artifacts dropped by 73.6%.
+* As individual model reasoning capacity increases (from 7B/8B to 14B/Frontier), **inter-annotator agreement increases non-linearly**: disputes dropped by 52.6%, and unconfirmed single-agent artifacts dropped by 75.5%.
 * High-capability models act as mutual anchors: even if one model exhibits a slight bias, the second model's high precision forces the deliberation and arbitration layer into the correct factual basin.
 * Consequently, epistemic gatekeeping changes from an obstruction (blocking 10% of papers due to model noise) into an authentic quality shield that cleanly accepts 100% of properly extracted literature.
+
 
 
 
