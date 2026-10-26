@@ -141,6 +141,7 @@ class RunLogger:
         eval_report: Optional[Any] = None,
         repo_inspector_result: Optional[Any] = None,
         outreach_draft: Optional[Any] = None,
+        curation_result: Optional[Any] = None,
         elapsed_seconds: Optional[float] = None,
         deliberation_trajectory: Optional[List[Any]] = None,
         error: Optional[str] = None,
@@ -315,7 +316,42 @@ class RunLogger:
                 json.dump(repo_dict, f, indent=2)
             summary_data["artifacts"]["repo_inspection"] = "repo_inspection.json"
 
-        # 9. Paper Summary Index
+        # 9. Database Curation Artifacts (if generated)
+        if curation_result:
+            plan = getattr(curation_result, "plan", None)
+            if plan:
+                path_curation_json = paper_dir / "curation_plan.json"
+                plan_dict = plan.model_dump() if hasattr(plan, "model_dump") else plan
+                with open(path_curation_json, "w", encoding="utf-8") as f:
+                    json.dump(plan_dict, f, indent=2)
+                summary_data["artifacts"]["curation_plan"] = "curation_plan.json"
+
+                # curation.sql
+                if plan.generated_sql:
+                    path_curation_sql = paper_dir / "curation.sql"
+                    with open(path_curation_sql, "w", encoding="utf-8") as f:
+                        f.write(f"-- SQL Curation Statements for {model_id}\n")
+                        f.write(f"-- Action: {plan.model_action.value} | Status: {plan.audit_status}\n\n")
+                        f.write("\n\n".join(plan.generated_sql) + "\n")
+                    summary_data["artifacts"]["curation_sql"] = "curation.sql"
+
+                # curation_summary.md
+                if plan.summary:
+                    path_curation_md = paper_dir / "curation_summary.md"
+                    with open(path_curation_md, "w", encoding="utf-8") as f:
+                        f.write(f"# Database Curation: {model_id}\n\n")
+                        f.write(plan.summary + "\n")
+                    summary_data["artifacts"]["curation_summary"] = "curation_summary.md"
+
+                summary_data["curation"] = {
+                    "action": getattr(plan.model_action, "value", str(plan.model_action)),
+                    "can_commit": plan.can_commit,
+                    "committed": getattr(curation_result, "committed", False),
+                    "sql_count": len(plan.generated_sql),
+                    "novel_benchmarks_count": len(plan.schema_changes),
+                }
+
+        # 10. Paper Summary Index
         path_summary = paper_dir / "paper_summary.json"
         with open(path_summary, "w", encoding="utf-8") as f:
             json.dump(summary_data, f, indent=2)
@@ -326,6 +362,8 @@ class RunLogger:
         self,
         json_results: Dict[str, Any],
         markdown_report: str,
+        database_curation_sql: Optional[str] = None,
+        database_curation_report: Optional[str] = None,
         update_latest_symlinks: bool = True,
     ) -> None:
         """
@@ -334,6 +372,8 @@ class RunLogger:
         Args:
             json_results: Full structured dictionary of benchmark results.
             markdown_report: Formatted Markdown report string.
+            database_curation_sql: Optional complete SQL curation script for all models.
+            database_curation_report: Optional Markdown report of database curation.
             update_latest_symlinks: If True, writes copies/symlinks to logs/latest_batch_benchmark.*
         """
         # Save within dedicated run directory
@@ -342,6 +382,16 @@ class RunLogger:
 
         with open(self.report_file, "w", encoding="utf-8") as f:
             f.write(markdown_report)
+
+        if database_curation_sql:
+            curation_sql_file = self.run_dir / "database_curation.sql"
+            with open(curation_sql_file, "w", encoding="utf-8") as f:
+                f.write(database_curation_sql)
+
+        if database_curation_report:
+            curation_rep_file = self.run_dir / "database_curation_report.md"
+            with open(curation_rep_file, "w", encoding="utf-8") as f:
+                f.write(database_curation_report)
 
         # Update latest pointers in logs root for backward compatibility
         if update_latest_symlinks:
@@ -354,6 +404,16 @@ class RunLogger:
 
             with open(latest_md, "w", encoding="utf-8") as f:
                 f.write(markdown_report)
+
+            if database_curation_sql:
+                latest_sql = LOGS_DIR / "latest_database_curation.sql"
+                with open(latest_sql, "w", encoding="utf-8") as f:
+                    f.write(database_curation_sql)
+
+            if database_curation_report:
+                latest_cur_rep = LOGS_DIR / "latest_database_curation_report.md"
+                with open(latest_cur_rep, "w", encoding="utf-8") as f:
+                    f.write(database_curation_report)
 
             # Create or update latest_run symlink
             try:

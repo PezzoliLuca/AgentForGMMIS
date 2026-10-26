@@ -8,7 +8,7 @@ MUFASA_USER="${MUFASA_USER:-lpezzoli}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "🔎 Checking active SLURM benchmark jobs on Mufasa (${MUFASA_USER}@${MUFASA_HOST})..."
-ACTIVE_JOB=$(ssh "${MUFASA_USER}@${MUFASA_HOST}" "source /etc/profile; module load amd/slurm 2>/dev/null; squeue -u ${MUFASA_USER} -h -o '%i %j %T' | grep -E 'gmmis|bench' | head -n 1" || true)
+ACTIVE_JOB=$(ssh "${MUFASA_USER}@${MUFASA_HOST}" "source /etc/profile.d/modules.sh 2>/dev/null; module load amd/slurm 2>/dev/null; squeue -u ${MUFASA_USER} -h -o '%i %j %T' | grep -E 'gmmis|bench' | head -n 1" || true)
 
 if [ -z "${ACTIVE_JOB}" ]; then
     echo "ℹ️ No running benchmark jobs found on Mufasa. Syncing latest completed runs directly..."
@@ -33,7 +33,7 @@ echo "--------------------------------------------------------------------------
 
 # Follow logs until the SLURM job finishes
 ssh "${MUFASA_USER}@${MUFASA_HOST}" "
-    source /etc/profile
+    source /etc/profile.d/modules.sh 2>/dev/null
     module load amd/slurm 2>/dev/null
     EXEC_LOG=\"${LATEST_RUN_DIR}/execution.log\"
     while squeue -j ${JOB_ID} -h | grep -q \"${JOB_ID}\"; do

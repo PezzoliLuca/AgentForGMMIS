@@ -85,6 +85,18 @@ def main():
         help="Maximum deliberation rounds in dual-agent mode (default: 3; set to 1 to disable re-interrogation)",
     )
     parser.add_argument(
+        "--apply-curation",
+        action="store_true",
+        default=False,
+        help="If set, commits curated models and scores to database.sqlite. Default: False (dry-run mode).",
+    )
+    parser.add_argument(
+        "--min-conf-curation",
+        type=float,
+        default=0.85,
+        help="Minimum confidence threshold for single-agent unconfirmed scores (default: 0.85).",
+    )
+    parser.add_argument(
         "--archive-legacy",
         action="store_true",
         default=False,
@@ -171,12 +183,15 @@ def main():
         from agent_gmmis.auditing.outreach import OutreachAgent
         from agent_gmmis.auditing.repo_inspector import RepoInspector
         from agent_gmmis.auditing.schemas import AuditStatus
+        from agent_gmmis.database.database_agent import DatabaseAgent, generate_curation_markdown_report
+        from agent_gmmis.database.schemas import CurationActionType
         from agent_gmmis.extraction.pdf_parser import PDFParser
         from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
 
         auditor = AuditorAgent(db_manager=db)
         repo_inspector = RepoInspector()
         outreach_agent = OutreachAgent()
+        database_agent = DatabaseAgent(db_manager=db, single_agent_min_conf=args.min_conf_curation)
 
         if is_dual:
             from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
@@ -276,7 +291,27 @@ def main():
                 report = evaluator.evaluate(extracted, ground_truth_id=model_id, compare_source=args.compare_source)
                 elapsed = time.time() - t0
 
-                # Persist intermediate agent extractions and consensus matrix
+                # Curation Layer: DatabaseAgent
+                paper_metadata_dict = {
+                    "paper_title": extracted.paper_title,
+                    "proposed_model_id": extracted.proposed_model_id,
+                    "authors_affiliations": getattr(extracted_a, "authors_affiliations", None),
+                    "code_repository_url": extracted.code_repository_url,
+                    "framework": getattr(extracted_a, "framework", None),
+                    "architecture": getattr(extracted_a, "architecture", None),
+                    "visual_backbone": extracted.visual_backbone,
+                    "millions_of_parameters": extracted.millions_of_parameters,
+                    "number_of_gflops": getattr(extracted_a, "number_of_gflops", None),
+                    "resources": getattr(extracted_a, "resources", None),
+                    "resources_total_vram_gb": getattr(extracted_a, "resources_total_vram_gb", None),
+                }
+                curation_result = database_agent.curate(
+                    audit_report=audit_report,
+                    paper_metadata=paper_metadata_dict,
+                    dry_run=not args.apply_curation,
+                )
+
+                # Persist intermediate agent extractions, consensus matrix, and curation artifacts
                 paper_dir = run_logger.log_paper_extraction(
                     model_id=model_id,
                     extracted_a=extracted_a,
@@ -286,6 +321,7 @@ def main():
                     eval_report=report,
                     repo_inspector_result=repo_inspector if repo_recovered else None,
                     outreach_draft=outreach_draft,
+                    curation_result=curation_result,
                     elapsed_seconds=elapsed,
                     deliberation_trajectory=deliberation_trajectory,
                 )
@@ -317,12 +353,24 @@ def main():
                     "extracted_a": extracted_a,
                     "extracted_b": extracted_b if is_dual else None,
                     "audit_report": audit_report,
+                    "curation_result": curation_result,
                     "elapsed": elapsed,
                     "pdf_name": pdf_path.name,
                     "repo_recovered": repo_recovered,
                     "outreach_draft": outreach_draft,
                     "paper_dir": paper_dir,
                 })
+
+                c_plan = curation_result.plan
+                c_inserted = sum(1 for d in c_plan.score_diffs if d.action == CurationActionType.INSERT_SCORE)
+                c_updated = sum(1 for d in c_plan.score_diffs if d.action == CurationActionType.UPDATE_PEAK_SCORE)
+                c_preserved = sum(1 for d in c_plan.score_diffs if d.action == CurationActionType.PRESERVE_EXISTING_PEAK)
+                c_disputed = sum(1 for d in c_plan.score_diffs if d.action == CurationActionType.SKIP_DISPUTED_SCORE)
+                c_novel = len(c_plan.schema_changes)
+                c_act = c_plan.model_action.value if c_plan.can_commit else f"BLOCKED ({c_plan.rejection_reason})"
+                c_summary_str = f"💾 DB Curation: {c_act} | {c_inserted} new, {c_updated} peak gains, {c_preserved} preserved, {c_disputed} disputes blocked | {len(c_plan.generated_sql)} SQLs"
+                if c_novel > 0:
+                    c_summary_str += f" | +{c_novel} novel benchmarks"
 
                 audit_notes = []
                 if hasattr(audit_report, "consensus_scores"):
@@ -347,6 +395,7 @@ def main():
                 notes_str = f" — Audit: [{', '.join(audit_notes)}]" if audit_notes else ""
 
                 print(f"   ✅ Done in {elapsed:.1f}s — Audit: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%) — Scores: {len(extracted.extracted_scores)}, Matched: {report.matched_datasets_count}/{report.ground_truth_datasets_count}, Dice MAE: {dice_mae_str}{notes_str}")
+                print(f"   {c_summary_str}")
                 print(f"   📂 Artifacts saved to: {paper_dir.relative_to(run_logger.run_dir)}")
 
             except Exception as e:
@@ -379,6 +428,36 @@ def main():
         headers = ["Model ID", "Audit Status", "Confidence", "Datasets Matched", "Recall", "Dice MAE", "Time"]
         summary_table_str = tabulate(summary_rows, headers=headers, tablefmt="github")
         print(summary_table_str)
+
+        # Print Aggregated Database Curation Summary Table
+        curation_plans = [it["curation_result"].plan for it in detailed_reports if it.get("curation_result")]
+        curation_table_rows = []
+        for p in curation_plans:
+            act_label = p.model_action.value if p.can_commit else f"BLOCKED ({p.rejection_reason[:20]}...)" if p.rejection_reason else "BLOCKED"
+            n_ins = sum(1 for d in p.score_diffs if d.action == CurationActionType.INSERT_SCORE)
+            n_upd = sum(1 for d in p.score_diffs if d.action == CurationActionType.UPDATE_PEAK_SCORE)
+            n_pre = sum(1 for d in p.score_diffs if d.action == CurationActionType.PRESERVE_EXISTING_PEAK)
+            n_dis = sum(1 for d in p.score_diffs if d.action == CurationActionType.SKIP_DISPUTED_SCORE)
+            n_nov = len(p.schema_changes)
+            curation_table_rows.append([
+                p.model_id,
+                act_label,
+                p.audit_status,
+                f"{p.audit_confidence * 100:.0f}%",
+                n_ins,
+                n_upd,
+                n_pre,
+                n_dis,
+                n_nov,
+                len(p.generated_sql),
+            ])
+
+        print("\n" + "=" * 80)
+        print(f"🏛️ DATABASE MANAGER CURATION SUMMARY ({'APPLIED' if args.apply_curation else 'DRY RUN'})")
+        print("=" * 80)
+        curation_headers = ["Model ID", "Action", "Audit Status", "Conf", "New Scores", "Peak Updates", "Preserved", "Disputes", "Novel Cols", "SQLs"]
+        curation_table_str = tabulate(curation_table_rows, headers=curation_headers, tablefmt="github")
+        print(curation_table_str)
 
         # Write detailed Markdown Report
         auditor_mode_desc = (
@@ -426,6 +505,21 @@ def main():
             ]
             md_lines.append(tabulate(outreach_table, headers=["Model", "Corresponding Author", "Email", "Target Datasets", "Target Figures", "Review Draft"], tablefmt="github"))
             md_lines.append("")
+
+        if curation_table_rows:
+            md_lines.extend([
+                "---",
+                "",
+                f"## 🏛️ Database Manager Curation Summary ({'Applied to SQLite' if args.apply_curation else 'Dry Run Mode'})",
+                "",
+                "Autonomous curation decisions generated by `DatabaseAgent` reflecting monotonic peak updates, single-agent thresholds, and epistemic gatekeeping:",
+                "",
+                curation_table_str,
+                "",
+                f"- **Unified SQL Migration Script**: [`database_curation.sql`](file://{run_logger.run_dir}/database_curation.sql)",
+                f"- **Detailed Curation Audit Report**: [`database_curation_report.md`](file://{run_logger.run_dir}/database_curation_report.md)",
+                "",
+            ])
 
         md_lines.extend([
             "---",
@@ -646,13 +740,51 @@ def main():
             }
             json_results["papers"].append(paper_entry)
 
+        # Assemble unified SQL script and Curation Audit Report
+        total_sql_statements = []
+        for p in curation_plans:
+            if p.generated_sql:
+                header = (
+                    f"\n-- ====================================================================\n"
+                    f"-- Model: {p.model_id} | Status: {p.audit_status} (Conf: {p.audit_confidence:.2f})\n"
+                    f"-- Action: {p.model_action.value}\n"
+                    f"-- ====================================================================\n"
+                )
+                total_sql_statements.append(header)
+                total_sql_statements.extend(p.generated_sql)
+
+        database_curation_sql = (
+            "-- ====================================================================\n"
+            "-- GMMIS Autonomous Database Curation Script\n"
+            f"-- Generated by DatabaseAgent across {len(curation_plans)} papers\n"
+            f"-- Execution Mode: {'APPLIED' if args.apply_curation else 'DRY RUN'}\n"
+            "-- ====================================================================\n\n"
+            "BEGIN TRANSACTION;\n\n"
+            + "\n\n".join(total_sql_statements)
+            + "\n\nCOMMIT;\n"
+        ) if total_sql_statements else ""
+
+        database_curation_report = generate_curation_markdown_report(
+            curation_plans,
+            dry_run=not args.apply_curation,
+            sql_file_path=str(run_logger.run_dir / "database_curation.sql"),
+        )
+
         report_content = "\n".join(md_lines)
-        run_logger.save_run_results(json_results, report_content)
+        run_logger.save_run_results(
+            json_results=json_results,
+            markdown_report=report_content,
+            database_curation_sql=database_curation_sql,
+            database_curation_report=database_curation_report,
+        )
 
         print("\n" + "=" * 80)
         print(f"📁 Run Directory:            {run_logger.run_dir}")
         print(f"📄 Detailed Markdown report: {run_logger.report_file}")
         print(f"📊 Structured JSON results:  {run_logger.results_file}")
+        if database_curation_sql:
+            print(f"💾 Unified SQL curation:    {run_logger.run_dir / 'database_curation.sql'}")
+            print(f"🏛️ Curation audit report:   {run_logger.run_dir / 'database_curation_report.md'}")
         print(f"📂 Intermediate extractions: {run_logger.extractions_dir}")
         print(f"📝 Full execution log:       {run_logger.log_file}")
         print(f"🔗 Latest report pointer:    {LOGS_DIR / 'latest_batch_benchmark.md'}")

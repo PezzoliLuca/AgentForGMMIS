@@ -92,6 +92,15 @@ class InclusionCriteriaCheck(BaseModel):
     has_dice_metric: bool = Field(True, description="Reports Dice Similarity Coefficient (DSC)?")
     notes: Optional[str] = None
 
+    @field_validator("is_3d", "is_radiological", "is_public_dataset", "has_dice_metric", mode="before")
+    @classmethod
+    def coerce_none_to_bool(cls, v):
+        if v is None:
+            return False
+        if isinstance(v, str):
+            return v.strip().lower() in ("true", "1", "yes", "t")
+        return bool(v)
+
     @property
     def is_included(self) -> bool:
         """Determines if the candidate paper meets all inclusion criteria."""

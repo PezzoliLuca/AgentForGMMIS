@@ -151,7 +151,7 @@ class LLMClient:
             max_retries = 6
             backoff = 5.0
             current_model = self.config.model
-            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
+            fallback_models = ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]
             for attempt in range(max_retries):
                 try:
                     global _gemini_pacing_lock, _last_gemini_timestamp
@@ -397,7 +397,7 @@ class LLMClient:
                 config_obj.system_instruction = system_prompt
             import time
             current_model = self.config.model
-            fallback_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.1-flash-lite"]
+            fallback_models = ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]
             backoff = 4.0
             for attempt in range(5):
                 try:

@@ -175,6 +175,13 @@ class ReinterrogationScoreResponse(BaseModel):
         description="Reason for exclusion if is_valid_benchmark=False (e.g. '2D modality', 'baseline model', 'private data')",
     )
 
+    @field_validator("dataset_name", "organ_or_task", mode="before")
+    @classmethod
+    def default_none_str(cls, v, info):
+        if v is None or not str(v).strip():
+            return "Overall" if info.field_name == "organ_or_task" else "Unknown"
+        return str(v).strip()
+
     @field_validator("dice_score", mode="before")
     @classmethod
     def normalize_score(cls, v: Optional[float]) -> Optional[float]:

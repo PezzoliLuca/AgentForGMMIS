@@ -182,7 +182,116 @@ class DatabaseManager:
                 return None
 
     # ---------------------------------------------------------
-    # Insert / Upsert (For Downstream Database Agent)
+    # Schema Introspection & Dynamic Evolution (For DatabaseAgent)
+    # ---------------------------------------------------------
+    def get_table_columns(self, table_name: str) -> List[str]:
+        """Returns the list of column names for a specified table."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(f'PRAGMA table_info("{table_name}");')
+            return [row["name"] for row in cursor.fetchall()]
+
+    def has_column(self, table_name: str, column_name: str) -> bool:
+        """Checks if a column exists in the specified table."""
+        return column_name in self.get_table_columns(table_name)
+
+    def add_column_to_table(
+        self,
+        table_name: str,
+        column_name: str,
+        col_type: str = "REAL",
+        default: Any = None,
+    ) -> str:
+        """
+        Dynamically adds a new column to a table.
+        Returns the exact SQL statement executed.
+        """
+        default_clause = f" DEFAULT {default}" if default is not None else ""
+        query = f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {col_type}{default_clause};'
+        with self._get_connection() as conn:
+            conn.execute(query)
+            conn.commit()
+        return query
+
+    def init_curation_history_table(self) -> None:
+        """Initializes the immutable curation_history table if it does not exist."""
+        query = """
+        CREATE TABLE IF NOT EXISTS curation_history (
+            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            status TEXT NOT NULL,
+            audit_status TEXT,
+            audit_confidence REAL,
+            diff_payload TEXT,
+            notes TEXT
+        );
+        """
+        with self._get_connection() as conn:
+            conn.execute(query)
+            conn.commit()
+
+    def record_curation_history(
+        self,
+        model_id: str,
+        action_type: str,
+        status: str,
+        audit_status: Optional[str] = None,
+        audit_confidence: Optional[float] = None,
+        diff_payload: Optional[str] = None,
+        notes: Optional[str] = None,
+    ) -> None:
+        """Inserts a record into the curation_history table."""
+        self.init_curation_history_table()
+        import datetime
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        query = """
+        INSERT INTO curation_history (
+            timestamp, model_id, action_type, status, audit_status,
+            audit_confidence, diff_payload, notes
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                query,
+                (now, model_id, action_type, status, audit_status, audit_confidence, diff_payload, notes),
+            )
+            conn.commit()
+
+    def get_score_raw(
+        self,
+        model_id: str,
+        dataset_name: str,
+        table_name: str = "results_best",
+    ) -> Optional[float]:
+        """
+        Returns the exact raw score from results_best or results_primary.
+        Returns None if column does not exist or score is NULL.
+        """
+        if not self.has_column(table_name, dataset_name):
+            return None
+        query = f'SELECT "{dataset_name}" FROM "{table_name}" WHERE ID = ?;'
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (model_id,))
+            row = cursor.fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+            return None
+
+    def execute_sql_script(self, statements: List[str]) -> None:
+        """Executes a list of SQL statements inside an atomic transaction."""
+        script_full = "\n".join(stmt.strip() for stmt in statements if stmt.strip())
+        with self._get_connection() as conn:
+            try:
+                conn.executescript(f"BEGIN TRANSACTION;\n{script_full}\nCOMMIT;")
+            except Exception as e:
+                conn.rollback()
+                raise RuntimeError(f"Database transaction rolled back due to error: {e}") from e
+
+    # ---------------------------------------------------------
+    # Insert / Upsert (For DatabaseAgent)
     # ---------------------------------------------------------
     def save_model(self, model: ModelMetadata) -> None:
         """Inserts or replaces a model record."""
@@ -219,3 +328,32 @@ class DatabaseManager:
         with self._get_connection() as conn:
             conn.execute(query, values)
             conn.commit()
+
+    def save_dataset(self, dataset: DatasetMetadata) -> None:
+        """Inserts or replaces a dataset metadata record."""
+        query = """
+        INSERT OR REPLACE INTO datasets (
+            Name, [Full Name], Description, [Sub-dataset], [Imaging Modality],
+            Objects, [Main Anatomical Structure], Region, [Links URL], [Links Text],
+            [Cit Keys], [N Tot], [N with Labels]
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        values = (
+            dataset.name,
+            dataset.full_name,
+            dataset.description,
+            dataset.sub_dataset,
+            dataset.imaging_modality,
+            dataset.objects,
+            dataset.main_anatomical_structure,
+            dataset.region,
+            dataset.links_url,
+            dataset.links_text,
+            dataset.cit_keys,
+            dataset.n_tot,
+            dataset.n_with_labels,
+        )
+        with self._get_connection() as conn:
+            conn.execute(query, values)
+            conn.commit()
+

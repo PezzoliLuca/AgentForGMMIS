@@ -31,8 +31,12 @@ elif [ -f ".venv/bin/activate" ]; then
 fi
 
 # Load GEMINI_API_KEY from .env if not already set in environment
-if [ -z "$GEMINI_API_KEY" ] && [ -f ".env" ]; then
-    export $(grep -v '^#' .env | grep -E '^GEMINI_API_KEY=' | xargs)
+if [ -z "$GEMINI_API_KEY" ]; then
+    if [ -f "$HOME/AgentForGMMIS/.env" ]; then
+        export $(grep -v '^#' "$HOME/AgentForGMMIS/.env" | grep -E '^GEMINI_API_KEY=' | xargs)
+    elif [ -f ".env" ]; then
+        export $(grep -v '^#' .env | grep -E '^GEMINI_API_KEY=' | xargs)
+    fi
 fi
 
 if [ -z "$GEMINI_API_KEY" ]; then
@@ -44,9 +48,9 @@ export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME
 export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
 
 MODEL_NAME=${1:-"Qwen/Qwen2.5-14B-Instruct-AWQ"}
-GEMINI_MODEL=${GEMINI_MODEL:-"gemini-3.5-flash-lite"}
+GEMINI_MODEL=${GEMINI_MODEL:-"gemini-3.1-flash-lite"}
 PORT=8000
-COUNT=${2:-20}
+COUNT=${2:-40}
 MAX_ROUNDS=${MAX_ROUNDS:-3}
 
 echo "=================================================================="
@@ -105,7 +109,7 @@ python3 -u scripts/run_batch_benchmark.py \
     --model-b "$GEMINI_MODEL" \
     --count "$COUNT" \
     --max-rounds "$MAX_ROUNDS" \
-    --tag "mufasa_qwen_gemini_${COUNT}" \
+    --tag "mufasa_qwen14b_gemini_${COUNT}" \
     "${@:3}"
 
 echo "=================================================================="

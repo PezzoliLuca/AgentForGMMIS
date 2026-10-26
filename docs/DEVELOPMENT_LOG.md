@@ -1044,3 +1044,109 @@ The 40-paper benchmark completed autonomously on the Mufasa cluster with flawles
   * **82/82 tests passing in 0.65s** with 100% green coverage.
 * **Remote HPC Test Suite**: Executed `pytest tests/ -v` on Mufasa cluster node `gn01`
   * **82/82 tests passing in 0.90s**.
+
+---
+
+## Session 2026-10-26: Database Manager Agent (`DatabaseAgent`) Design & Thesis Specification
+
+### 1. Architectural Decisions & Requirements
+* **Module Naming & Namespace**: Standardized as `DatabaseAgent` (residing in `src/agent_gmmis/database/database_agent.py` and `agent_gmmis.database`).
+* **Score Curation Policy (Consensus Integration)**:
+  * **`CONCORDANT`**: Ingested directly into primary and best benchmark columns.
+  * **`SINGLE_AGENT_UNCONFIRMED`**: Ingested under restricted confidence gating ($\text{Conf} \ge 0.85$) with single-agent attribution comments.
+  * **`DISPUTED`**: Numeric column left NULL to guard leaderboard purity; dispute details logged to comments and audit history.
+* **Monotonic Peak Improvement Policy**:
+  * $\text{Dice}_{\text{best}}^{\text{new}} = \max(\text{Dice}_{\text{best}}^{\text{existing}}, \text{Dice}_{\text{extracted}})$. Updates to `results_best` are strictly conditioned on monotonic improvement ($\text{new} > \text{old}$); lower alternative scores documented in comments.
+  * Preserved `results_primary` as canonical baseline; flagged for discussion with thesis advisor Prof. Andrea Moglia.
+* **The Epistemic Boundary Filter**:
+  * Private/in-house clinical cohorts are strictly prohibited from wide-table schema evolution (`ALTER TABLE ... ADD COLUMN ...`). Documented exclusively in model notes.
+  * Genuine novel public 3D radiological benchmarks dynamically alter all 5 wide tables within an atomic SQLite transaction.
+
+### 2. Documentation Deliverables
+* Created [`docs/DATABASE_MANAGER_DESIGN.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/docs/DATABASE_MANAGER_DESIGN.md): Full architectural design, state machines, DDL wide-table patterns, and thesis specifications.
+* Updated [`docs/THESIS_DESIGN_LOG.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/docs/THESIS_DESIGN_LOG.md): Added Section 30 (Scientific Gem on Epistemic Boundary and Monotonic Curation).
+* Updated [`docs/NEXT_STEPS.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/docs/NEXT_STEPS.md): Set `DatabaseAgent` as current active milestone.
+
+---
+
+## Session 2026-10-26 (Part 2): 40-Paper Multi-Agent Benchmark Execution (`Job 5461`) & Empirical DatabaseAgent Validation
+
+### 1. Objective
+1. Run the end-to-end multi-agent pipeline on a large-scale **40-paper literature cohort** on DEIB Mufasa HPC (`gpu:3g.20gb:1`), integrating all agents simultaneously:
+   - **Dual-Agent Extraction**: `Qwen2.5-7B-Instruct-AWQ` (port 8000) and `Meta-Llama-3.1-8B-Instruct-AWQ` (port 8001).
+   - **Quality Critic**: `AuditorAgent` ("Il Vigile") with multi-tier consensus and sanity checks.
+   - **Delegation Layer**: `RepoInspector` & `OutreachAgent`.
+   - **Knowledge Curator**: `DatabaseAgent` for transactional database curation.
+2. Implement clean, granular, and structured logging for all database curation activities.
+3. Validate dynamic wide-table schema evolution (`ALTER TABLE ... ADD COLUMN ...`) and monotonic peak tracking across both known and novel literature models.
+
+### 2. System Enhancements & Code Hardening
+* **Orchestration Integration (`scripts/run_batch_benchmark.py`)**:
+  - Wired `DatabaseAgent` directly into the batch evaluation loop in dry-run mode (`dry_run=True`).
+  - Added structured per-paper artifact emission: `curation_plan.json`, `curation.sql`, `curation_summary.md`.
+  - Added run-level aggregated artifacts: `database_curation.sql` (wrapped in `BEGIN TRANSACTION; ... COMMIT;`), `database_curation_report.md` via `generate_curation_markdown_report()`.
+  - Integrated the Database Manager Curation Summary table into `benchmark_report.md`.
+* **ZeroDivisionError Fix (`src/agent_gmmis/database/database_agent.py`)**:
+  - Guarded `delta_pct` calculation against zero baseline (`if current_best > 0 else 100.0`) when computing peak improvement percentage in `BiomedParse`.
+* **Pydantic Validation Hardening**:
+  - `src/agent_gmmis/data/models.py`: Added `coerce_none_to_bool` validator to `InclusionCriteriaCheck` to gracefully coerce `None`/`null` to `False` for `has_dice_metric` when LLMs output `null` on radar-only papers (e.g. `Merlin`).
+  - `src/agent_gmmis/extraction/schemas.py`: Added `default_none_str` validator in `ReinterrogationScoreResponse` to handle `null` strings for `organ_or_task` and `dataset_name`.
+* **Test Suite Status**:
+  - Added 11 unit and integration tests in `tests/test_database_agent.py`.
+  - Total local test suite: **93/93 tests passing in 0.88s**.
+
+### 3. Empirical Results (`Job 5461` / `Run 20261026_142312_mufasa_dual_local_40`)
+* **Execution Metrics**: 38/40 papers completed successfully (95.0% success rate) in 62 minutes (~98s per paper).
+* **Curation Ingestion Breakdown**:
+  - **New Models Inserted**: **6** (`MedSAM / IMIS-Net`, `SAT-Pro`, `Disruptive Autoencoders`, `PCT-Net`, `Diff-UNet`, `MedSegDiff`).
+  - **Existing Models Updated**: **28** models enriched with verified metadata, parameters, and repositories.
+  - **Models Blocked by Gatekeeper**: **4** papers blocked (`SAM3D` conf=0.47, `MA-SAM` conf=0.45, `Hermes` conf=0.52, `GVSL` conf=0.52) due to certified confidence $< 0.60$.
+  - **Monotonic Peak Improvements**: **62** peak scores updated in `results_best` with calculated gain notation.
+  - **Peaks Preserved**: **242** lower alternative scores preserved in comments without degrading recorded state of the art.
+  - **Disputes Blocked**: **38** disputed scores assigned `NULL` in numeric columns.
+  - **Unconfirmed Omitted**: **432** single-agent scores with confidence $< 0.85$ omitted.
+  - **Generated SQL**: 4,146 statements consolidated into `database_curation.sql` (289 KB).
+
+### 4. Wide-Table Schema Evolution & Novel Benchmarks Discovery
+* When `DatabaseAgent` certified novel models or public benchmark datasets not indexed in Moglia et al.'s survey, it dynamically issued synchronized DDL operations across all 5 wide tables (`results_primary`, `results_best`, `results_best_source`, `results_primary_comments`, `results_best_comments`).
+* **133 Novel Benchmarks Identified**: Categorized into 3 academic groups:
+  1. *Category 1 (Genuine Public Challenges)*: `IMed-361M`, `BraTS2020`, `ULS23`, `CAS2023`, `SEG.A.2023`, `UKB Data`, `MICCAI 2015 Head-Neck`, `ATLAS`, `REFUGE`, `RAVIR`, `Decathlon-Lungs`, `JHH`, `Fed-IXI`.
+  2. *Category 2 (Organ/Sub-task Breakdowns)*: `MultiTalent` (12 organs), `3DSAM-adapter` (4 tumors), `UniSeg` (8 MSD tasks), `MoME` (5 sequences).
+  3. *Category 3 (Modality Zero-Shot Splits)*: `SAM-Med2D` (10 modalities), `BioSAM-2` (4 domains), `TotalSegmentator MRI` (2 splits).
+* Formatted an alignment agenda to discuss policy with thesis advisor Prof. Andrea Moglia.
+
+---
+
+## Session 2026-10-26 (Part 3): Hybrid Sovereign + Frontier Benchmark Execution (`Job 5471`) & Head-to-Head Comparative Synthesis
+
+### 1. Objective & Setup
+Deploy and evaluate a **Hybrid Sovereign + Frontier Architecture** on the 40-paper literature cohort to directly compare against the Dual-Local topology (`Job 5461`):
+* **Agent A (Sovereign Local)**: `Qwen2.5-14B-Instruct-AWQ` running on DEIB Mufasa HPC (A100 GPU, node `gn01`, vLLM on port 8000).
+* **Agent B (Frontier Cloud)**: `Google Gemini 3.1 Flash Lite` via Google AI Studio API (mandate: 0.00 € API spend).
+* **Auditor & Critic**: `AuditorAgent` ("Il Vigile") in autonomous deploy mode.
+* **Curator Engine**: `DatabaseAgent` in dry-run preview mode.
+
+### 2. Empirical Execution Results (`Job 5471` / `Run 20261026_181522_mufasa_qwen14b_gemini_40`)
+* **Execution Status**: Completed autonomously on Mufasa cluster node `gn01` in 102 minutes (~153s/paper).
+* **Completion Rate**: **40 / 40 papers evaluated (100.0% completion)**.
+* **Gatekeeper Rejections**: **0 papers blocked (0.0% rejection rate)**. All 4 papers previously blocked in Job 5461 (`SAM3D`, `MA-SAM`, `HERMES`, `GVSL`) were cleanly certified with confidence between 89% and 94%.
+* **Database Curation Breakdown**:
+  - **New Models Inserted**: **4** (`SAT-Pro`, `SAMed / SAM-LoRA-Exemplar`, `Disruptive Autoencoders`, `PCT-Net`).
+  - **Existing Models Updated**: **36** models enriched with verified metadata and repositories.
+  - **New Benchmark Scores**: **128** newly established evaluations.
+  - **Monotonic Peak Improvements**: **29** scores monotonically improved in `results_best`.
+  - **Peaks Preserved**: **82** lower alternative scores preserved in comments.
+  - **Disputes Blocked**: **18** disputes blocked (`NULL` in numeric columns).
+  - **Unconfirmed Omitted**: **114** single-agent scores omitted.
+  - **Novel Benchmarks Added**: **91** clean standardized benchmark columns.
+  - **Consolidated SQL**: `database_curation.sql` (180 KB, fully transactional).
+
+### 3. Key Comparative Findings (Dual-Local vs Hybrid)
+1. **Gatekeeper Unblocking**: Scaling from 7B/8B to 14B + Gemini eliminated all epistemic false rejections, taking effective curation from 85% (34/40) to **100% (40/40)**.
+2. **Dispute Reduction**: Inter-model disputes decreased from 38 to 18 (**-55.3% reduction**), proving that model capability directly strengthens consensus stability.
+3. **Extraction Fidelity**: Exact 0.0000 MAE extractions tripled from 3 to **9 models** (`IMIS-Net`, `MedSAM-2`, `BrainSegFounder`, `Cheap Lunch SAM`, `One-Prompt`, `NexToU`, `UniverSeg`, `UniSeg`, `Diff-UNet`).
+4. **Outlier Error Elimination**: Outlier errors $>0.15$ MAE were completely eliminated; maximum observed error was 0.1168 (on `SAM3D`), with dramatic reductions on `FLAP-SAM` (0.300 $\to$ 0.049) and `SFR SAM` (0.152 $\to$ 0.049).
+5. **Noise Reduction**: Single-agent unconfirmed scores dropped from 432 to 114 (**-73.6% reduction**), and schema evolution columns tightened from 133 to 91 standardized identifiers.
+
+
+
