@@ -78,7 +78,7 @@ Mufasa provides dedicated GPU nodes (`--gres=gpu:3g.20gb:1` MIG slices or full A
 | :--- | :--- | :--- | :--- | :--- |
 | **`Qwen/Qwen2.5-14B-Instruct-AWQ`** *(Recommended)* | 4-bit AWQ | ~9 GB | 32k - 64k tokens | State-of-the-art structured JSON & table extraction, leaves 11 GB for KV cache |
 | **`mistralai/Mistral-7B-Instruct-v0.3`** | float16 / 4-bit | ~5 - 14 GB | 32k tokens | European sovereign open model (Mistral AI, France). High speed, solid JSON mode |
-| **`casperhansen/codestral-22b-v0.1-awq`** | 4-bit AWQ | ~13 GB | 16k - 32k tokens | European code & structured data specialist (22B). Superior LaTeX table parsing |
+| **`TechxGenus/Codestral-22B-v0.1-AWQ`** | 4-bit AWQ | ~13 GB | 16k - 32k tokens | European code & structured data specialist (22B). Superior LaTeX table parsing |
 | **`Qwen/Qwen2.5-7B-Instruct`** | float16 / 4-bit | ~5 - 14 GB | 32k - 128k tokens | Ultra-fast inference, low resource consumption |
 | **`meta-llama/Llama-3.1-8B-Instruct`** | float16 / 4-bit | ~8 - 16 GB | 128k tokens | General reasoning and robust prompt alignment |
 
