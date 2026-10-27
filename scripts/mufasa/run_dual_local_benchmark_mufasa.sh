@@ -35,12 +35,50 @@ fi
 export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$CPATH"
 export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
 
-MODEL_A=${MODEL_A:-"Qwen/Qwen2.5-7B-Instruct-AWQ"}
-MODEL_B=${MODEL_B:-"hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"}
+MODEL_A_DEFAULT="Qwen/Qwen2.5-7B-Instruct-AWQ"
+MODEL_B_DEFAULT="solidrust/Mistral-7B-Instruct-v0.3-AWQ"
+
+if [[ "$1" =~ ^[0-9]+$ ]]; then
+    COUNT=${1:-40}
+    MAX_ROUNDS=${2:-3}
+    MODEL_A=${3:-${MODEL_A:-"$MODEL_A_DEFAULT"}}
+    MODEL_B=${4:-${MODEL_B:-"$MODEL_B_DEFAULT"}}
+    EXTRA_ARGS=("${@:5}")
+elif [ -n "$1" ]; then
+    MODEL_A=$1
+    MODEL_B=${2:-${MODEL_B:-"$MODEL_B_DEFAULT"}}
+    COUNT=${3:-40}
+    MAX_ROUNDS=${4:-3}
+    EXTRA_ARGS=("${@:5}")
+else
+    COUNT=40
+    MAX_ROUNDS=3
+    MODEL_A=${MODEL_A:-"$MODEL_A_DEFAULT"}
+    MODEL_B=${MODEL_B:-"$MODEL_B_DEFAULT"}
+    EXTRA_ARGS=()
+fi
+
 PORT_A=8000
 PORT_B=8001
-COUNT=${1:-20}
-MAX_ROUNDS=${2:-3}
+
+# Chat templates for Mistral/Codestral if required by transformers/vLLM
+TEMPLATE_ARG_A=""
+if [[ "$MODEL_A" =~ [Mm]istral || "$MODEL_A" =~ [Cc]odestral ]]; then
+    if [ -f "scripts/mufasa/mistral_chat_template.jinja" ]; then
+        TEMPLATE_ARG_A="--chat-template scripts/mufasa/mistral_chat_template.jinja"
+    fi
+fi
+
+TEMPLATE_ARG_B=""
+if [[ "$MODEL_B" =~ [Mm]istral || "$MODEL_B" =~ [Cc]odestral ]]; then
+    if [ -f "scripts/mufasa/mistral_chat_template.jinja" ]; then
+        TEMPLATE_ARG_B="--chat-template scripts/mufasa/mistral_chat_template.jinja"
+    fi
+fi
+
+CLEAN_A=$(basename "$MODEL_A" | sed -E 's/(Instruct|v0\.[0-9]|-AWQ|-INT4)//g; s/[^a-zA-Z0-9]//g')
+CLEAN_B=$(basename "$MODEL_B" | sed -E 's/(Instruct|v0\.[0-9]|-AWQ|-INT4)//g; s/[^a-zA-Z0-9]//g')
+TAG="mufasa_dual_local_${CLEAN_A}_${CLEAN_B}_${COUNT}"
 
 echo "=================================================================="
 echo "🤝 AGENT FOR GMMIS — 100% LOCAL DUAL-AGENT BENCHMARK ON MUFASA"
@@ -50,28 +88,34 @@ echo "Agent A:      Mufasa GPU (port $PORT_A) -> $MODEL_A"
 echo "Agent B:      Mufasa GPU (port $PORT_B) -> $MODEL_B"
 echo "Paper Count:  $COUNT"
 echo "Max Rounds:   $MAX_ROUNDS"
+echo "Run Tag:      $TAG"
 echo "=================================================================="
 
 nvidia-smi
 
 export VLLM_USE_V1=0
 
-# 1. Start vLLM Server A (Qwen 7B AWQ)
+cleanup() {
+    echo "🛑 Shutting down vLLM servers..."
+    [ -n "$VLLM_PID_A" ] && kill -9 "$VLLM_PID_A" 2>/dev/null || true
+    [ -n "$VLLM_PID_B" ] && kill -9 "$VLLM_PID_B" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# 1. Start vLLM Server A (port 8000)
 echo "Starting vLLM Server A on port $PORT_A for $MODEL_A..."
 vllm serve "$MODEL_A" \
     --port "$PORT_A" \
     --max-model-len 16384 \
     --gpu-memory-utilization 0.43 \
     --enforce-eager \
+    $TEMPLATE_ARG_A \
     --trust-remote-code > "logs/vllm_server_a_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID_A=$!
 
-# Trap signals to ensure both servers are cleanly killed on exit/error
-trap "kill -9 $VLLM_PID_A $VLLM_PID_B 2>/dev/null" EXIT INT TERM
-
 # Wait for Server A
 echo "Waiting for vLLM Server A to be ready on port $PORT_A..."
-MAX_WAIT=180
+MAX_WAIT=240
 ELAPSED=0
 until curl -sf "http://localhost:$PORT_A/health" > /dev/null || [ $ELAPSED -ge $MAX_WAIT ]; do
     if ! kill -0 $VLLM_PID_A 2>/dev/null; then
@@ -90,13 +134,14 @@ if [ $ELAPSED -ge $MAX_WAIT ]; then
 fi
 echo "✅ Server A is LIVE on port $PORT_A!"
 
-# 2. Start vLLM Server B (Llama 3.1 8B AWQ)
+# 2. Start vLLM Server B (port 8001)
 echo "Starting vLLM Server B on port $PORT_B for $MODEL_B..."
 vllm serve "$MODEL_B" \
     --port "$PORT_B" \
     --max-model-len 16384 \
     --gpu-memory-utilization 0.43 \
     --enforce-eager \
+    $TEMPLATE_ARG_B \
     --trust-remote-code > "logs/vllm_server_b_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID_B=$!
 
@@ -132,8 +177,8 @@ python3 -u scripts/run_batch_benchmark.py \
     --base-url-b "http://localhost:$PORT_B/v1" \
     --count "$COUNT" \
     --max-rounds "$MAX_ROUNDS" \
-    --tag "mufasa_dual_local_${COUNT}" \
-    "${@:3}"
+    --tag "$TAG" \
+    "${EXTRA_ARGS[@]}"
 
 echo "=================================================================="
 echo "✅ Local Dual-Agent Benchmark Completed on $(date)"
