@@ -673,12 +673,28 @@ In `Job 5472`, the Critic (`AuditorAgent`) blocked 4 papers from database curati
 This experiment provides empirical proof of the **Consensus-Capability Frontier** in agentic systems:
 * As individual model reasoning capacity increases (from 7B/8B to 14B/Frontier), **inter-annotator agreement increases non-linearly**: disputes dropped by 52.6%, and unconfirmed single-agent artifacts dropped by 75.5%.
 * High-capability models act as mutual anchors: even if one model exhibits a slight bias, the second model's high precision forces the deliberation and arbitration layer into the correct factual basin.
-* Consequently, epistemic gatekeeping changes from an obstruction (blocking 10% of papers due to model noise) into an authentic quality shield that cleanly accepts 100% of properly extracted literature.
 
+---
 
+### 32. Multi-Sovereignty Benchmark & European Open-Weight Model Integration (Mistral AI)
 
+* **The Geopolitical and Epistemic Triangulation (USA - China - Europe)**:
+  To assess autonomous scientific information extraction without geopolitical or single-ecosystem dependency, the evaluation framework expands to a tri-continental foundation model comparison:
+  1. **USA (Frontier Cloud APIs)**: Google Gemini 3.5 Flash Lite (ultra-fast, zero-cost tier, massive context window).
+  2. **China (Open-Weight State-of-the-Art)**: Alibaba Qwen 2.5 (14B-Instruct-AWQ) — leading structured extraction and mathematical reasoning.
+  3. **Europe (Sovereign Open-Weight Ecosystem)**: Mistral AI (`Mistral-7B-Instruct-v0.3` / `Codestral-22B-v0.1-AWQ`) — aligned with European AI Act transparency, GDPR data residency, and open European research sovereignty.
 
+* **Hardware Viability on DEIB Mufasa Cluster (20 GB VRAM MIG Allocation)**:
+  On Mufasa, jobs execute on NVIDIA A100 GPUs partitioned into MIG slices of 20 GB VRAM (`gpu:3g.20gb:1`) managed via SLURM and served via `vLLM`:
+  - **The Context Footprint Reality**: Full biomedical manuscripts (15–30 pages) require processing 12,000 to 25,000 input tokens. Under vLLM's `PagedAttention`, the KV Cache dynamically claims 6 to 10 GB of VRAM.
+  - **Memory Budget**:
+    - `Mistral-7B-Instruct-v0.3`: ~5 GB (4-bit) or ~14 GB (bfloat16). Leaves 6–15 GB entirely for KV Cache, allowing ultra-fast inference (>45 tokens/s) with zero out-of-memory risk.
+    - `Codestral-22B-v0.1-AWQ`: ~12.5 GB weights footprint. Leaves ~7.5 GB for KV Cache, supporting up to 24k tokens. As a specialized code/structured model, its ability to parse complex multi-line LaTeX tables and generate rigid JSON schemas makes it a primary candidate.
+    - `Qwen2.5-14B-Instruct-AWQ`: ~9 GB weights footprint. Leaves 11 GB for KV Cache, serving as the verified local anchor.
 
-
-
-
+* **Comparative Analysis: Local Edge Engines (e.g. Antirez's DS4) vs Enterprise HPC (vLLM)**:
+  Recent community interest in running frontier MoE models (DeepSeek V3/V4) on consumer hardware has highlighted engines like **DS4 (DwarfStar 4)** by Salvatore Sanfilippo (antirez):
+  - **Architectural Scope**: DS4 is explicitly engineered for **Apple Silicon Macs** with unified memory (Metal architecture) and fast internal APFS SSD paging, targeting machines with **$\ge 96$ GB unified RAM** to host 200B+ MoE architectures with asymmetric quantization.
+  - **HPC Cluster Incompatibility**: Mufasa is a Linux x86_64 cluster with discrete NVIDIA A100 GPUs and high-bandwidth GPU memory (HBM2e at $\sim 1.5 - 2.0$ TB/s). In this environment, enterprise inference engines like **vLLM** (utilizing Triton, FlashAttention-2, and CUDA PagedAttention) remain the optimal paradigm.
+  - **Throughput vs Disk Offloading**: Offloading KV caches or weights to SSD storage (bandwidth 5–7 GB/s) incurs a $\approx 300\times$ bandwidth penalty relative to GPU HBM, reducing throughput to $1-3$ tokens/s. For autonomous pipelines benchmarking dozens of papers with multi-round consensus and auditing, high throughput ($30-60$ tokens/s) is essential.
+  - **Scaling Roadmap to 32B/72B+**: When scaling beyond the 20 GB MIG slice, the recommended HPC procedure is requesting an unpartitioned full A100 GPU (`--gres=gpu:1` or `gpu:a100:1` providing 40 GB or 80 GB VRAM) on Mufasa, enabling models like `Qwen2.5-32B-Instruct-AWQ` or `Mistral-Large` to run at native GPU speeds without offloading bottlenecks.

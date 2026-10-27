@@ -185,7 +185,10 @@ With `ExtractionAgent`, `AuditorAgent`, `RepoInspector`, `OutreachAgent`, and `D
    * Review the 3-category taxonomy (Category 1: Genuine public challenges omitted from survey; Category 2: Organ/class breakdowns; Category 3: Modality zero-shot splits).
    * Agree on adoption policies: whether Category 1 benchmarks (`IMed-361M`, `BraTS2020`, `ULS23`, `CAS2023`, `ATLAS`, `RAVIR`) become permanent schema columns, and how Category 2 organ breakdowns should be aggregated.
    * Confirm the monotonic peak policy ($\text{Dice}_{\text{best}} = \max(\text{old}, \text{new})$) while keeping `results_primary` as the immutable survey baseline.
-2. **Phase 4 (`ScoutAgent`)**:
+2. **Tri-Continental Sovereign Model Evaluation on Mufasa**:
+   * Deploy and benchmark a European sovereign open-weight model (`mistralai/Mistral-7B-Instruct-v0.3` or `casperhansen/codestral-22b-v0.1-awq`) on Mufasa's 20 GB VRAM slice.
+   * Benchmark across the 40-paper corpus to complete the tri-continental comparison: USA (Gemini 3.5 Flash) vs China (Qwen 2.5 14B) vs Europe (Mistral/Codestral).
+3. **Phase 4 (`ScoutAgent`)**:
    * Continuous discovery of newly published medical segmentation preprints via arXiv and PubMed APIs.
    * Automatic paper fetching and execution of the full multi-agent pipeline.
 
