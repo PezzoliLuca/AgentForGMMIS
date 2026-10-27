@@ -53,14 +53,27 @@ PORT=8000
 COUNT=${2:-40}
 MAX_ROUNDS=${MAX_ROUNDS:-3}
 
+# Determine max model context length based on model size / architecture to prevent KV cache OOM
+if [[ "$MODEL_NAME" =~ [Cc]odestral || "$MODEL_NAME" =~ 2[0-9][Bb] ]]; then
+    DEFAULT_MAX_LEN=24576
+else
+    DEFAULT_MAX_LEN=32768
+fi
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-$DEFAULT_MAX_LEN}
+
+# Generate clean dynamic benchmark directory tag
+MODEL_TAG=$(echo "$MODEL_NAME" | awk -F/ '{print $NF}' | tr '[:upper:]' '[:lower:]' | sed -E 's/(-instruct|-awq|-v0.1|-int4)//g')
+BENCH_TAG=${TAG:-"mufasa_${MODEL_TAG}_gemini_${COUNT}"}
+
 echo "=================================================================="
 echo "🤝 AGENT FOR GMMIS — DUAL-AGENT CONSENSUS BENCHMARK ON MUFASA"
 echo "Job ID:       $SLURM_JOB_ID"
 echo "Node:         $(hostname)"
-echo "Agent A:      Mufasa GPU vLLM -> $MODEL_NAME"
+echo "Agent A:      Mufasa GPU vLLM -> $MODEL_NAME (max-len: $MAX_MODEL_LEN)"
 echo "Agent B:      Google AI Studio -> $GEMINI_MODEL"
 echo "Paper Count:  $COUNT"
 echo "Max Rounds:   $MAX_ROUNDS"
+echo "Run Tag:      $BENCH_TAG"
 echo "=================================================================="
 
 nvidia-smi
@@ -70,7 +83,7 @@ export VLLM_USE_V1=0
 echo "Starting vLLM server on port $PORT for Agent A..."
 vllm serve "$MODEL_NAME" \
     --port "$PORT" \
-    --max-model-len 32768 \
+    --max-model-len "$MAX_MODEL_LEN" \
     --gpu-memory-utilization 0.90 \
     --enforce-eager \
     --trust-remote-code &
@@ -81,7 +94,7 @@ trap "kill -9 $VLLM_PID 2>/dev/null" EXIT INT TERM
 
 # 2. Wait for vLLM to initialize (health check loop)
 echo "Waiting for vLLM server to be ready..."
-MAX_WAIT=180
+MAX_WAIT=300
 ELAPSED=0
 until curl -sf http://localhost:$PORT/health > /dev/null || [ $ELAPSED -ge $MAX_WAIT ]; do
     if ! kill -0 $VLLM_PID 2>/dev/null; then
@@ -109,7 +122,7 @@ python3 -u scripts/run_batch_benchmark.py \
     --model-b "$GEMINI_MODEL" \
     --count "$COUNT" \
     --max-rounds "$MAX_ROUNDS" \
-    --tag "mufasa_qwen14b_gemini_${COUNT}" \
+    --tag "$BENCH_TAG" \
     "${@:3}"
 
 echo "=================================================================="

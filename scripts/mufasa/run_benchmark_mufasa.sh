@@ -26,11 +26,19 @@ MODEL_NAME=${1:-"Qwen/Qwen2.5-14B-Instruct-AWQ"}
 PORT=8000
 COUNT=${2:-15}
 
+# Determine max model context length based on model size / architecture to prevent KV cache OOM
+if [[ "$MODEL_NAME" =~ [Cc]odestral || "$MODEL_NAME" =~ 2[0-9][Bb] ]]; then
+    DEFAULT_MAX_LEN=24576
+else
+    DEFAULT_MAX_LEN=32768
+fi
+MAX_MODEL_LEN=${MAX_MODEL_LEN:-$DEFAULT_MAX_LEN}
+
 echo "=================================================================="
 echo "🚀 AGENT FOR GMMIS — MUFASA HPC BENCHMARK"
-echo "Job ID:    $SLURM_JOB_ID"
-echo "Node:      $(hostname)"
-echo "Model:     $MODEL_NAME"
+echo "Job ID:      $SLURM_JOB_ID"
+echo "Node:        $(hostname)"
+echo "Model:       $MODEL_NAME (max-len: $MAX_MODEL_LEN)"
 echo "Paper Count: $COUNT"
 echo "=================================================================="
 
@@ -41,7 +49,7 @@ export VLLM_USE_V1=0
 echo "Starting vLLM server on port $PORT..."
 vllm serve "$MODEL_NAME" \
     --port "$PORT" \
-    --max-model-len 32768 \
+    --max-model-len "$MAX_MODEL_LEN" \
     --gpu-memory-utilization 0.90 \
     --enforce-eager \
     --trust-remote-code &
@@ -52,7 +60,7 @@ trap "kill -9 $VLLM_PID 2>/dev/null" EXIT INT TERM
 
 # 2. Wait for vLLM to initialize (health check loop)
 echo "Waiting for vLLM server to be ready..."
-MAX_WAIT=180
+MAX_WAIT=300
 ELAPSED=0
 until curl -sf http://localhost:$PORT/health > /dev/null || [ $ELAPSED -ge $MAX_WAIT ]; do
     if ! kill -0 $VLLM_PID 2>/dev/null; then
