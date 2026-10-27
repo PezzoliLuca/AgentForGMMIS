@@ -18,43 +18,49 @@ fi
 
 JOB_ID=$(echo "${ACTIVE_JOB}" | awk '{print $1}')
 JOB_NAME=$(echo "${ACTIVE_JOB}" | awk '{print $2}')
-echo "🎯 Found active job ${JOB_ID} (${JOB_NAME}). Finding latest run directory..."
-
-LATEST_RUN_DIR=$(ssh "${MUFASA_USER}@${MUFASA_HOST}" "ls -td ~/AgentForGMMIS/logs/runs/* 2>/dev/null | head -n 1" || true)
-if [ -z "${LATEST_RUN_DIR}" ]; then
-    echo "⚠️ No run directory found yet. Waiting for job initialization..."
-    sleep 5
-    LATEST_RUN_DIR=$(ssh "${MUFASA_USER}@${MUFASA_HOST}" "ls -td ~/AgentForGMMIS/logs/runs/* 2>/dev/null | head -n 1" || true)
-fi
-
-RUN_NAME=$(basename "${LATEST_RUN_DIR}")
-echo "📋 Streaming live logs for run: ${RUN_NAME}..."
+echo "🎯 Found active job ${JOB_ID} (${JOB_NAME})."
+echo "📋 Streaming live logs for SLURM Job ${JOB_ID}..."
 echo "--------------------------------------------------------------------------------"
 
-# Follow logs until the SLURM job finishes
+# Follow SLURM output logs until the job finishes
 ssh "${MUFASA_USER}@${MUFASA_HOST}" "
     source /etc/profile.d/modules.sh 2>/dev/null
     module load amd/slurm 2>/dev/null
-    EXEC_LOG=\"${LATEST_RUN_DIR}/execution.log\"
-    while squeue -j ${JOB_ID} -h | grep -q \"${JOB_ID}\"; do
-        if [ -f \"\${EXEC_LOG}\" ]; then
-            tail -n +1 -f \"\${EXEC_LOG}\" --pid=\$\$ &
-            TAIL_PID=\$!
-            while squeue -j ${JOB_ID} -h | grep -q \"${JOB_ID}\"; do
-                sleep 5
-            done
-            kill \${TAIL_PID} 2>/dev/null || true
-            break
-        fi
-        sleep 2
+    
+    # Wait for the SLURM log file to appear
+    SLURM_LOG=\"\"
+    for i in \$(seq 1 15); do
+        SLURM_LOG=\$(ls -t ~/AgentForGMMIS/logs/*_${JOB_ID}.out 2>/dev/null | head -n 1 || true)
+        [ -n \"\${SLURM_LOG}\" ] && break
+        sleep 1
     done
+
+    if [ -n \"\${SLURM_LOG}\" ]; then
+        tail -n +1 -f \"\${SLURM_LOG}\" --pid=\$\$ &
+        TAIL_PID=\$!
+        while squeue -j ${JOB_ID} -h | grep -q \"${JOB_ID}\"; do
+            sleep 3
+        done
+        # Give a moment for remaining buffer flush
+        sleep 2
+        kill \${TAIL_PID} 2>/dev/null || true
+    else
+        echo 'Waiting for SLURM job to start...'
+        while squeue -j ${JOB_ID} -h | grep -q \"${JOB_ID}\"; do
+            sleep 3
+        done
+    fi
 " || true
 
 echo "--------------------------------------------------------------------------------"
 echo "🏁 Job ${JOB_ID} has finished! Automatically syncing logs to local Mac..."
 "${ROOT_DIR}/scripts/sync_mufasa_logs.sh"
 
-echo "📂 Synced locally to: ${ROOT_DIR}/logs/mufasa_runs/${RUN_NAME}/"
-if [ -f "${ROOT_DIR}/logs/mufasa_runs/${RUN_NAME}/benchmark_report.md" ]; then
-    echo "📄 Detailed Report: ${ROOT_DIR}/logs/mufasa_runs/${RUN_NAME}/benchmark_report.md"
+LATEST_RUN_DIR=$(ls -td "${ROOT_DIR}/logs/mufasa_runs/"* 2>/dev/null | head -n 1 || true)
+if [ -n "${LATEST_RUN_DIR}" ]; then
+    RUN_NAME=$(basename "${LATEST_RUN_DIR}")
+    echo "📂 Synced locally to: ${ROOT_DIR}/logs/mufasa_runs/${RUN_NAME}/"
+    if [ -f "${LATEST_RUN_DIR}/benchmark_report.md" ]; then
+        echo "📄 Detailed Report: ${LATEST_RUN_DIR}/benchmark_report.md"
+    fi
 fi

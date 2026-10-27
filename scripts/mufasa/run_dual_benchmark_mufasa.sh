@@ -80,13 +80,19 @@ nvidia-smi
 
 # 1. Start vLLM background server for Agent A
 export VLLM_USE_V1=0
+TEMPLATE_ARGS=()
+if [[ "$MODEL_NAME" =~ [Cc]odestral && -f "scripts/mufasa/mistral_chat_template.jinja" ]]; then
+    TEMPLATE_ARGS+=(--chat-template "scripts/mufasa/mistral_chat_template.jinja")
+fi
+
 echo "Starting vLLM server on port $PORT for Agent A..."
 vllm serve "$MODEL_NAME" \
     --port "$PORT" \
     --max-model-len "$MAX_MODEL_LEN" \
     --gpu-memory-utilization 0.90 \
     --enforce-eager \
-    --trust-remote-code &
+    --trust-remote-code \
+    "${TEMPLATE_ARGS[@]}" &
 VLLM_PID=$!
 
 # Trap signals to ensure background vLLM is killed on exit/error
