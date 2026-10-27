@@ -54,7 +54,7 @@ COUNT=${2:-40}
 MAX_ROUNDS=${MAX_ROUNDS:-3}
 
 # Determine max model context length based on model size / architecture to prevent KV cache OOM
-if [[ "$MODEL_NAME" =~ [Cc]odestral || "$MODEL_NAME" =~ 2[0-9][Bb] ]]; then
+if [[ "$MODEL_NAME" =~ [Cc]odestral || "$MODEL_NAME" =~ [Mm]istral || "$MODEL_NAME" =~ 2[0-9][Bb] ]]; then
     DEFAULT_MAX_LEN=24576
 else
     DEFAULT_MAX_LEN=32768
@@ -81,7 +81,7 @@ nvidia-smi
 # 1. Start vLLM background server for Agent A
 export VLLM_USE_V1=0
 TEMPLATE_ARGS=()
-if [[ "$MODEL_NAME" =~ [Cc]odestral && -f "scripts/mufasa/mistral_chat_template.jinja" ]]; then
+if [[ ("$MODEL_NAME" =~ [Cc]odestral || "$MODEL_NAME" =~ [Mm]istral) && -f "scripts/mufasa/mistral_chat_template.jinja" ]]; then
     TEMPLATE_ARGS+=(--chat-template "scripts/mufasa/mistral_chat_template.jinja")
 fi
 
