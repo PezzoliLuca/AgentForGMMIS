@@ -698,3 +698,52 @@ This experiment provides empirical proof of the **Consensus-Capability Frontier*
   - **HPC Cluster Incompatibility**: Mufasa is a Linux x86_64 cluster with discrete NVIDIA A100 GPUs and high-bandwidth GPU memory (HBM2e at $\sim 1.5 - 2.0$ TB/s). In this environment, enterprise inference engines like **vLLM** (utilizing Triton, FlashAttention-2, and CUDA PagedAttention) remain the optimal paradigm.
   - **Throughput vs Disk Offloading**: Offloading KV caches or weights to SSD storage (bandwidth 5–7 GB/s) incurs a $\approx 300\times$ bandwidth penalty relative to GPU HBM, reducing throughput to $1-3$ tokens/s. For autonomous pipelines benchmarking dozens of papers with multi-round consensus and auditing, high throughput ($30-60$ tokens/s) is essential.
   - **Scaling Roadmap to 32B/72B+**: When scaling beyond the 20 GB MIG slice, the recommended HPC procedure is requesting an unpartitioned full A100 GPU (`--gres=gpu:1` or `gpu:a100:1` providing 40 GB or 80 GB VRAM) on Mufasa, enabling models like `Qwen2.5-32B-Instruct-AWQ` or `Mistral-Large` to run at native GPU speeds without offloading bottlenecks.
+
+---
+
+### 33. The Tri-Continental & Intra-Family Quad-Benchmark: Head-to-Head Evaluation Across 40 Papers
+
+On 2026-10-26 and 2026-10-27, the autonomous multi-agent pipeline (`AgentForGMMIS`) was evaluated across four distinct dual-agent configurations on the exact same corpus of **40 3D medical foundation model papers** on the DEIB Mufasa HPC cluster:
+
+1. **Dual-Local (Job 5461)**: `Qwen2.5-7B-Instruct-AWQ` (China) + `Meta-Llama-3.1-8B-Instruct-AWQ` (USA) — On-premise constrained baseline.
+2. **Hybrid China (Job 5471)**: `Qwen2.5-14B-Instruct-AWQ` (China) + `Google Gemini 3.1 Flash Lite` (USA) — SOTA open-weights + frontier API.
+3. **Hybrid Europe Pro (Job 5511)**: `Codestral-22B-v0.1-AWQ` (France / Mistral AI) + `Google Gemini 3.1 Flash Lite` (USA) — Code/structured data specialist + frontier API.
+4. **Hybrid Europe Light (Job 5516)**: `Mistral-7B-Instruct-v0.3` (France / Mistral AI) + `Google Gemini 3.1 Flash Lite` (USA) — Ultra-fast open European model + frontier API.
+
+#### Comprehensive 4-Way Quantitative Comparison Table
+
+| Performance Dimension | **Dual-Local (Job 5461)**<br>Qwen-7B + Llama-8B | **Hybrid China (Job 5471)**<br>Qwen-14B + Gemini | **Hybrid Europe Pro (Job 5511)**<br>Codestral-22B + Gemini | **Hybrid Europe Light (Job 5516)**<br>Mistral-7B + Gemini |
+| :--- | :--- | :--- | :--- | :--- |
+| **Agent A (On-Premise)** | `Qwen2.5-7B-AWQ` | `Qwen2.5-14B-AWQ` | `Codestral-22B-AWQ` | `Mistral-7B-Instruct-v0.3` |
+| **Agent B (Partner)** | `Llama-3.1-8B-AWQ` (Local) | `gemini-3.1-flash-lite` | `gemini-3.1-flash-lite` | `gemini-3.1-flash-lite` |
+| **Total Runtime (40 Papers)**| 60.3 min (90.5s / paper) | 99.7 min (149.6s / paper) | 143.3 min (214.9s / paper) | **47.3 min (71.0s / paper)** *(Fastest!)* |
+| **Auditor Classification** | | | | |
+| - *VERIFIED Papers* | 11 / 40 (27.5%) | 23 / 40 (57.5%) | **26 / 40 (65.0%)** *(Highest!)* | 24 / 40 (60.0%) |
+| - *FLAGGED_WARNING Papers* | 27 / 40 (67.5%) | 17 / 40 (42.5%) | 12 / 40 (30.0%) | 13 / 40 (32.5%) |
+| - *REJECTED Papers* | 0 / 40 | 0 / 40 | **1 / 40** (`SAM-Med2D`) | **1 / 40** (`SAM-Med2D`) |
+| - *OUTREACH DRAFTED* | 0 / 40 | 0 / 40 | **1 / 40** (`DAE`) | 0 / 40 |
+| **Metric Accuracy (Ground Truth)** | | | | |
+| - *Mean Dice MAE* | 0.0627 (6.27% error) | **0.0269 (2.69% error)** | 0.0281 (2.81% error) | 0.0362 (3.62% error) |
+| - *Median Dice MAE* | 0.0255 (2.55% error) | 0.0215 (2.15% error) | **0.0071 (0.71% error!)** | 0.0242 (2.42% error) |
+| - *Exact 0.0000 MAE Matches*| 4 models | **10 models** | 8 models | 8 models |
+| - *Near-Zero MAE (<0.005)* | 7 models | 13 models | **14 models** | 12 models |
+| - *Benchmark Recall* | 48.94% | 45.62% | 41.47% | **50.48%** *(Highest!)* |
+| **Consensus Dynamics** | | | | |
+| - *Disputes Blocked ($|\Delta| > 0.01$)*| 38 disputes | 18 disputes | 14 disputes | **11 disputes** *(Lowest ever!)* |
+| - *Unconfirmed Noise Omitted* | 432 scores | 114 scores | **50 scores** *(Cleanest!)* | 70 scores |
+| **Database Curation Output** | | | | |
+| - *Monotonic Peak Improvements* | 62 peaks | 29 peaks | 53 peaks | 44 peaks |
+| - *Historical Peaks Preserved* | 242 peaks | 82 peaks | 183 peaks | 165 peaks |
+| - *Novel Benchmarks Added* | 133 columns | 91 columns | 105 columns | 91 columns |
+| - *Total SQL Queries* | 1000+ | 674 | 972 | 754 |
+
+#### Key Scientific Findings
+
+1. **Intra-Family European Ablation: Mistral 7B vs Codestral 22B**:
+   - **Throughput & Speed**: `Mistral-7B` is **3.0x faster** than `Codestral-22B` (47.3 min vs 143.3 min, averaging 71s per paper vs 215s).
+   - **Recall vs Precision Frontier**: `Mistral-7B` achieves the highest recall across all runs (**50.48%**), eagerly matching candidate benchmark tables. Conversely, `Codestral-22B` acts as an ultra-conservative precision extractor, driving **median Dice MAE down to 0.0071 (0.71% error)** — a 67% reduction in median error.
+   - **Deliberation Harmony**: Both European models demonstrate exceptional alignment with Gemini Flash, dropping inter-agent disputes from 38 (Dual-Local) and 18 (Qwen14B) to **14 (Codestral)** and **11 (Mistral-7B)**.
+
+2. **Geopolitical Triangulation (USA - China - Europe)**:
+   - When paired with an ultra-fast frontier cloud partner (Gemini Flash), European open-weight models deliver higher consensus agreement (fewer disputes and less unconfirmed single-agent noise) than the Chinese counterpart (Qwen 2.5 14B), while providing strict alignment with European open-weights and data sovereignty standards.
+   - Both Mistral models independently and consistently enforced epistemic gatekeeping on `SAM-Med2D` (rejecting it due to 2D slice modality violating the 3D inclusion mandate), a decision that smaller or purely generalist models left unresolved in warning states.

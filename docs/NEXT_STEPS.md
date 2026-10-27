@@ -185,9 +185,10 @@ With `ExtractionAgent`, `AuditorAgent`, `RepoInspector`, `OutreachAgent`, and `D
    * Review the 3-category taxonomy (Category 1: Genuine public challenges omitted from survey; Category 2: Organ/class breakdowns; Category 3: Modality zero-shot splits).
    * Agree on adoption policies: whether Category 1 benchmarks (`IMed-361M`, `BraTS2020`, `ULS23`, `CAS2023`, `ATLAS`, `RAVIR`) become permanent schema columns, and how Category 2 organ breakdowns should be aggregated.
    * Confirm the monotonic peak policy ($\text{Dice}_{\text{best}} = \max(\text{old}, \text{new})$) while keeping `results_primary` as the immutable survey baseline.
-2. **Tri-Continental Sovereign Model Evaluation on Mufasa**:
-   * Deploy and benchmark a European sovereign open-weight model (`mistralai/Mistral-7B-Instruct-v0.3` or `TechxGenus/Codestral-22B-v0.1-AWQ`) on Mufasa's 20 GB VRAM slice.
-   * Benchmark across the 40-paper corpus to complete the tri-continental comparison: USA (Gemini 3.5 Flash) vs China (Qwen 2.5 14B) vs Europe (Mistral/Codestral).
+2. **Tri-Continental Sovereign Model Evaluation on Mufasa — COMPLETED & VALIDATED**:
+   * Evaluated both `mistralai/Mistral-7B-Instruct-v0.3` and `TechxGenus/Codestral-22B-v0.1-AWQ` on Mufasa's 20 GB VRAM slice paired with Gemini 3.1 Flash Lite across the 40-paper corpus.
+   * Completed the 4-way comparison: Dual-Local (7B/8B), Hybrid China (Qwen14B), Hybrid Europe Pro (Codestral22B), and Hybrid Europe Light (Mistral7B).
+   * Key Findings: Mistral 7B is the fastest (47.3 min, 71s/paper) with highest recall (50.48%) and lowest disputes (11); Codestral 22B achieves state-of-the-art precision (0.71% median Dice MAE) and highest certified papers (26/40, 65%). Documented in [`docs/THESIS_DESIGN_LOG.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/docs/THESIS_DESIGN_LOG.md) Section 33.
 3. **Phase 4 (`ScoutAgent`)**:
    * Continuous discovery of newly published medical segmentation preprints via arXiv and PubMed APIs.
    * Automatic paper fetching and execution of the full multi-agent pipeline.
