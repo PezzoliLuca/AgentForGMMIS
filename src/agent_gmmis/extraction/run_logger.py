@@ -271,6 +271,9 @@ class RunLogger:
                 "ground_truth_datasets_count": getattr(eval_report, "ground_truth_datasets_count", None),
                 "dataset_recall": getattr(eval_report, "dataset_recall", None),
                 "dice_mae": getattr(eval_report, "dice_mae", None),
+                "dice_mae_primary": getattr(eval_report, "dice_mae_primary", None),
+                "dice_mae_best": getattr(eval_report, "dice_mae_best", None),
+                "dice_mae_regime_agnostic": getattr(eval_report, "dice_mae_regime_agnostic", None),
                 "score_comparisons": getattr(eval_report, "score_comparisons", []),
             }
             path_eval = paper_dir / "evaluation.json"

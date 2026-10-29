@@ -376,3 +376,173 @@ def test_dry_run_vs_apply_atomic_commit(database_agent: DatabaseAgent, db_manage
     assert res_apply.committed
     assert db_manager.get_model("AtomicTester-3D") is not None
     assert db_manager.get_score_raw("AtomicTester-3D", "BraTS", "results_best") == 94.0
+
+
+def test_single_agent_audit_report_curation(database_agent: DatabaseAgent, db_manager: DatabaseManager):
+    """Verifies that single-agent AuditReport with validated_scores is successfully curated."""
+    from agent_gmmis.extraction.schemas import RawExtractedScore
+
+    score = RawExtractedScore(
+        dataset_name="BraTS",
+        organ_or_task="Overall",
+        dice_score=0.910,
+        prompt_type="1 point",
+    )
+    report = AuditReport(
+        model_id="SingleAgentTester-3D",
+        status=AuditStatus.VERIFIED,
+        passed_sanity_checks=True,
+        passed_inclusion_screening=True,
+        confidence_score=0.92,
+        summary="Certified single-agent extraction",
+        validated_scores=[score],
+    )
+
+    plan = database_agent.plan_curation(report)
+    assert plan.model_id == "SingleAgentTester-3D"
+    assert len(plan.score_diffs) == 1
+    assert plan.score_diffs[0].dataset_name == "BraTS"
+    assert plan.score_diffs[0].new_score == 91.0
+    assert plan.score_diffs[0].consensus_status == "single_agent_unconfirmed"
+    assert plan.can_commit is True
+
+    # Commit and verify in SQLite
+    res = database_agent.curate(report, dry_run=False)
+    assert res.committed is True
+    assert db_manager.get_model("SingleAgentTester-3D") is not None
+    assert db_manager.get_score_raw("SingleAgentTester-3D", "BraTS", "results_best") == 91.0
+
+
+# ----------------------------------------------------------------------
+# 7. Priorità P2: Schema Contamination Guards & Entity Resolution
+# ----------------------------------------------------------------------
+def test_schema_guard_rejects_organs_modalities_and_placeholders(database_agent: DatabaseAgent):
+    """Verifies that anatomical organs, imaging modalities, and placeholders never trigger ADD COLUMN."""
+    # Direct validation tests
+    assert not database_agent._is_valid_new_benchmark_name("Liver")
+    assert not database_agent._is_valid_new_benchmark_name("Spleen")
+    assert not database_agent._is_valid_new_benchmark_name("Left Kidney")
+    assert not database_agent._is_valid_new_benchmark_name("Aorta")
+    assert not database_agent._is_valid_new_benchmark_name("CT")
+    assert not database_agent._is_valid_new_benchmark_name("MRI")
+    assert not database_agent._is_valid_new_benchmark_name("FLAIR")
+    assert not database_agent._is_valid_new_benchmark_name("Dataset 1")
+    assert not database_agent._is_valid_new_benchmark_name("Task 2")
+    assert not database_agent._is_valid_new_benchmark_name("Test Set")
+    assert not database_agent._is_valid_new_benchmark_name("Ours")
+    assert database_agent._is_valid_new_benchmark_name("AbdomenAtlas-2026")
+    assert database_agent._is_valid_new_benchmark_name("MyoPS-2020")
+
+    # In curation plan: non-benchmark items should be diverted to comments, not schema changes
+    organ_score = ConsensusScore(
+        dataset_name="Liver",
+        canonical_dataset_name="Liver",
+        organ_or_task="Liver",
+        status=ConsensusStatus.CONCORDANT,
+        score_a=0.92,
+        score_b=0.92,
+        resolved_score=0.92,
+    )
+    placeholder_score = ConsensusScore(
+        dataset_name="Dataset 1",
+        canonical_dataset_name="Dataset 1",
+        organ_or_task="Overall",
+        status=ConsensusStatus.CONCORDANT,
+        score_a=0.85,
+        score_b=0.85,
+        resolved_score=0.85,
+    )
+    report = make_dummy_consensus_report(
+        model_id="GuardTesterModel",
+        scores=[organ_score, placeholder_score],
+    )
+    plan = database_agent.plan_curation(report)
+    assert len(plan.schema_changes) == 0
+    sql_text = "\n".join(plan.generated_sql)
+    assert "ADD COLUMN" not in sql_text
+    assert "Schema Guard" in sql_text
+
+
+def test_schema_guard_blocks_unconfirmed_single_agent_new_columns(database_agent: DatabaseAgent):
+    """Verifies that single-agent unconfirmed scores cannot trigger wide-table ADD COLUMN."""
+    unconfirmed_new_score = ConsensusScore(
+        dataset_name="BrandNewChallenge2026",
+        canonical_dataset_name="BrandNewChallenge2026",
+        organ_or_task="Overall",
+        status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
+        score_a=0.89,
+        score_b=None,
+        resolved_score=0.89,
+    )
+    report = make_dummy_consensus_report(
+        model_id="SingleAgentNovelTester",
+        scores=[unconfirmed_new_score],
+    )
+    plan = database_agent.plan_curation(report)
+    assert len(plan.schema_changes) == 0
+    sql_text = "\n".join(plan.generated_sql)
+    assert "ADD COLUMN" not in sql_text
+
+
+def test_unicode_nfkc_and_generic_model_id_resolution(database_agent: DatabaseAgent):
+    """Verifies Unicode NFKC ligature normalization and generic placeholder filtering."""
+    # 1. 'Diﬀ-UNet' has Unicode ligature U+FB00 ('ﬀ') -> Must resolve to existing 'Diff-UNet' in DB
+    report_ligature = make_dummy_consensus_report(model_id="Diﬀ-UNet")
+    plan_ligature = database_agent.plan_curation(report_ligature)
+    assert plan_ligature.model_id == "Diff-UNet"
+    assert plan_ligature.model_action == CurationActionType.UPDATE_MODEL_METADATA
+
+    # 2. 'Ours' must be discarded in favor of expected_model_id or paper title
+    report_generic = make_dummy_consensus_report(model_id="Ours")
+    meta = {
+        "expected_model_id": "Cheap Lunch SAM",
+        "proposed_model_id": "Ours",
+        "paper_title": "A Cheap Lunch for Medical Image Segmentation",
+    }
+    plan_generic = database_agent.plan_curation(report_generic, paper_metadata=meta)
+    assert plan_generic.model_id != "Ours"
+    assert plan_generic.model_id == "Cheap Lunch SAM"
+
+
+def test_pre_update_deduplication_single_update_per_cell(database_agent: DatabaseAgent):
+    """Verifies that multiple scores for the same dataset generate at most one UPDATE query with Overall peak."""
+    organ1 = ConsensusScore(
+        dataset_name="BTCV",
+        canonical_dataset_name="BTCV",
+        organ_or_task="Liver",
+        status=ConsensusStatus.CONCORDANT,
+        score_a=0.91,
+        score_b=0.91,
+        resolved_score=0.91,
+    )
+    organ2 = ConsensusScore(
+        dataset_name="BTCV",
+        canonical_dataset_name="BTCV",
+        organ_or_task="Spleen",
+        status=ConsensusStatus.CONCORDANT,
+        score_a=0.93,
+        score_b=0.93,
+        resolved_score=0.93,
+    )
+    overall = ConsensusScore(
+        dataset_name="BTCV",
+        canonical_dataset_name="BTCV",
+        organ_or_task="Overall",
+        status=ConsensusStatus.CONCORDANT,
+        score_a=0.88,
+        score_b=0.88,
+        resolved_score=0.88,
+    )
+    report = make_dummy_consensus_report(
+        model_id="BTCVDedupTester",
+        scores=[organ1, organ2, overall],
+    )
+    plan = database_agent.plan_curation(report)
+    sql_text = "\n".join(plan.generated_sql)
+
+    # Exactly one UPDATE to results_best for BTCV
+    best_updates = [line for line in sql_text.splitlines() if 'UPDATE "results_best" SET "BTCV"' in line]
+    assert len(best_updates) == 1
+    # Overall score (88.0%) should be preferred over organ scores
+    assert "88.0" in best_updates[0]
+

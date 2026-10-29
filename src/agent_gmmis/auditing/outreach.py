@@ -357,7 +357,7 @@ Sincerely,
 Luca Pezzoli
 Department of Electronics, Information and Bioengineering (DEIB)
 Politecnico di Milano, Milan, Italy
-Email: luca.pezzoli@polimi.it
+Email: luca2.pezzoli@mail.polimi.it
 GitHub: https://github.com/PezzoliLuca/AgentForGMMIS
 """
         return subject, body

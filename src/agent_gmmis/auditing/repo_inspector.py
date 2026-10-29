@@ -82,8 +82,10 @@ class RepoInspector:
         # Follow redirects for shortlinks (e.g. aka.ms/biomedparse-project)
         if any(d in clean_url.lower() for d in ("aka.ms", "bit.ly", "tinyurl.com", "t.co", "cutt.ly")):
             try:
-                import ssl, urllib.request
-                ctx = ssl._create_unverified_context()
+                import ssl
+                import urllib.request
+                import certifi
+                ctx = ssl.create_default_context(cafile=certifi.where())
                 req = urllib.request.Request(clean_url, headers={"User-Agent": "Mozilla/5.0"})
                 with urllib.request.urlopen(req, timeout=5, context=ctx) as resp:
                     redirected = resp.url

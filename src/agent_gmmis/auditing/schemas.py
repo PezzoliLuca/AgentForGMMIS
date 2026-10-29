@@ -73,6 +73,7 @@ class AuditReport(BaseModel):
     data_diagnosis: MissingDataDiagnosis = MissingDataDiagnosis.NONE
     confidence_score: float = Field(1.0, description="Confidence score from 0.0 to 1.0")
     summary: str = ""
+    validated_scores: List[RawExtractedScore] = Field(default_factory=list, description="Validated numerical scores carried over from extraction")
 
 
 class RepoInspectionResult(BaseModel):

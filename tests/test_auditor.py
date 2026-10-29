@@ -375,7 +375,7 @@ class TestAuditorAgent:
                 RawExtractedScore(dataset_name="AMOS", organ_or_task="Multi-organ", dice_score=None, table_or_section_ref="Figure 4"),
             ],
         )
-        report = auditor.audit(data, manuscript=manuscript)
+        report = auditor.audit(data, manuscript=manuscript, repo_inspected=True)
         assert report.status == AuditStatus.NEEDS_OUTREACH
         assert report.data_diagnosis == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
 

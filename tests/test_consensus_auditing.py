@@ -948,3 +948,149 @@ class TestDualExtractionDeliberation:
         assert report.concordant_count == 1
         assert report.status != AuditStatus.REJECTED
 
+    def test_consensus_delegates_to_repo_inspection_even_with_unconfirmed_noise(self, auditor):
+        """Verifies that when 0 concordant scores exist and a code repository is disclosed,
+
+        dual consensus correctly triggers NEEDS_REPO_INSPECTION even if one agent extracted noisy singletons.
+        """
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        # Agent A found 0 valid tables and routed to NEEDS_REPO_INSPECTION
+        data_a = ExtractedPaperData(
+            paper_title="BiomedParse",
+            proposed_model_id="BiomedParse",
+            code_repository_url="https://github.com/microsoft/BiomedParse",
+            screening=screening,
+            extracted_scores=[],
+        )
+
+        # Agent B extracted an unconfirmed noisy singleton (e.g. from related work or ablation)
+        data_b = ExtractedPaperData(
+            paper_title="BiomedParse",
+            proposed_model_id="BiomedParse",
+            code_repository_url="https://github.com/microsoft/BiomedParse",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="RandomAblationTask", organ_or_task="Overall", dice_score=0.450),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+
+        # 0 concordant scores between A and B
+        assert report.concordant_count == 0
+        assert report.unconfirmed_count == 1
+        # Fallback layer must trigger RepoInspector
+        assert report.status == AuditStatus.NEEDS_REPO_INSPECTION
+
+    def test_consensus_delegates_to_outreach_when_figures_only(self, auditor):
+        """Verifies that when 0 concordant scores exist, no code repo, and figures are present,
+
+        dual consensus triggers NEEDS_OUTREACH.
+        """
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+        from agent_gmmis.extraction.pdf_parser import ParsedManuscript
+
+        manuscript = ParsedManuscript(
+            file_path="figures_model.pdf",
+            title="ModelFiguresOnly-3D",
+            total_pages=5,
+            pages_text={
+                1: "ModelFiguresOnly-3D: Multi-task Evaluation without tables.",
+                2: "Figure 4 shows the ROC curves and radar plots of Dice similarity.",
+            },
+            table_pages=[],
+        )
+
+        data_a = ExtractedPaperData(
+            paper_title="ModelFiguresOnly-3D",
+            proposed_model_id="ModelFiguresOnly-3D",
+            code_repository_url=None,
+            screening=screening,
+            extracted_scores=[],
+        )
+        data_b = ExtractedPaperData(
+            paper_title="ModelFiguresOnly-3D",
+            proposed_model_id="ModelFiguresOnly-3D",
+            code_repository_url=None,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="QualitativeMentionOnly", organ_or_task="Overall", dice_score=None),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b, manuscript=manuscript)
+
+        assert report.concordant_count == 0
+        assert report.status == AuditStatus.NEEDS_OUTREACH
+
+    def test_graceful_degradation_preserves_verified_agent_without_false_repo_inspection(self, auditor):
+        """Verifies that when Agent A extracts valid canonical benchmark tables and Agent B is the empty
+        graceful degradation fallback, the consensus report status is FLAGGED_WARNING (not NEEDS_REPO_INSPECTION)
+        and carries unconfirmed_count == 1.
+        """
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        data_a = ExtractedPaperData(
+            paper_title="SurvivorModel",
+            proposed_model_id="SurvivorModel",
+            code_repository_url="https://github.com/example/SurvivorModel",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(
+                    dataset_name="BraTS",
+                    organ_or_task="Overall",
+                    dice_score=0.91,
+                    table_or_section_ref="Table 1",
+                ),
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="SurvivorModel",
+            proposed_model_id="SurvivorModel",
+            code_repository_url="https://github.com/example/SurvivorModel",
+            screening=screening,
+            extraction_notes="Agent B failed: connection timeout. Single-agent fallback to Agent A.",
+            extracted_scores=[],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+
+        assert report.concordant_count == 0
+        assert report.unconfirmed_count == 1
+        assert report.status == AuditStatus.FLAGGED_WARNING
+        assert report.status != AuditStatus.NEEDS_REPO_INSPECTION
+
+    def test_deliberation_skips_when_single_agent_fallback_active(self, auditor, monkeypatch):
+        """Verifies that iterative deliberation does not execute queries on an agent in single-agent fallback mode."""
+        client_a = LLMClient(config=LLMConfig(provider="mock", model="mock-model-a"))
+        client_b = LLMClient(config=LLMConfig(provider="mock", model="mock-model-b"))
+        agent_a = ExtractionAgent(llm_client=client_a)
+        agent_b = ExtractionAgent(llm_client=client_b)
+        coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+
+        def fail_extract(manuscript):
+            raise RuntimeError("Backend connection refused")
+
+        monkeypatch.setattr(agent_b, "process_manuscript", fail_extract)
+
+        manuscript = ParsedManuscript(
+            file_path="dummy.pdf",
+            title="MedSAM Paper",
+            abstract="Abstract",
+            total_pages=3,
+            pages_text={1: "MedSAM text"},
+        )
+
+        ext_a, ext_b, audit_rep, traj = coordinator.extract_manuscript_with_deliberation(
+            manuscript,
+            auditor=auditor,
+            max_rounds=3,
+            verbose=False,
+        )
+
+        assert "Single-agent fallback" in ext_b.extraction_notes
+        assert len(traj) == 0  # Deliberation was skipped
+
+

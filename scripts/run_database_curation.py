@@ -96,7 +96,7 @@ def load_audit_report(report_path: Path) -> Optional[ConsensusAuditReport]:
 
 def load_paper_metadata(folder: Path) -> Dict[str, Any]:
     """Extracts paper metadata from agent extraction artifacts or summary."""
-    meta = {}
+    meta = {"expected_model_id": folder.name}
     for candidate in ("agent_a_extracted.json", "agent_b_extracted.json", "final_reconciled.json"):
         p = folder / candidate
         if p.exists():

@@ -69,11 +69,31 @@ class PDFParser:
             page_num = page_idx + 1
             page = doc[page_idx]
             text = page.get_text("text").strip()
+
+            # Structured table detection & Markdown conversion via PyMuPDF
+            markdown_tables = []
+            try:
+                tabs = page.find_tables()
+                if tabs and tabs.tables:
+                    for t in tabs.tables:
+                        md = t.to_markdown().strip()
+                        if md and len(md.splitlines()) >= 2 and "|" in md:
+                            markdown_tables.append(md)
+            except Exception:
+                pass
+
+            if markdown_tables:
+                text = text + "\n\n[Structured Table(s) Extracted from Page]:\n" + "\n\n".join(markdown_tables)
+
             pages_text[page_num] = text
 
             # Intelligent scoring for benchmark tables and evaluation sections
             text_lower = text.lower()
             score = 0
+
+            # Direct boost if structured Markdown tables were extracted
+            if markdown_tables:
+                score += len(markdown_tables) * 25
 
             # 1. Table and figure mentions (e.g. Table 1, Table 4, Figure 7)
             tables = re.findall(r"\btable\s+(\d+|[ivx]+)\b", text_lower)

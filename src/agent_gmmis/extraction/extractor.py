@@ -1,6 +1,7 @@
 """ExtractionAgent: Ingests scientific manuscripts and extracts structured benchmark records."""
 
 from pathlib import Path
+import re
 from typing import List, Optional, Union
 from agent_gmmis.extraction.pdf_parser import PDFParser, ParsedManuscript
 from agent_gmmis.extraction.prompts import (
@@ -29,11 +30,48 @@ class ExtractionAgent:
         manuscript = self.parser.parse(pdf_path)
         return self.process_manuscript(manuscript)
 
+    def get_default_context_chars(self) -> int:
+        """Determines optimal character budget based on model context window."""
+        if not self.llm or not hasattr(self.llm, "config"):
+            return 45000
+        provider = (getattr(self.llm.config, "provider", "") or "").lower()
+        if provider == "gemini":
+            return 80000
+        elif provider in ("mufasa", "ollama", "vllm"):
+            return 35000
+        return 45000
+
+    def _score_page(self, page_num: int, text: str, focal_keywords: Optional[List[str]] = None) -> float:
+        """Heuristic score to rank pages by density of quantitative benchmark results."""
+        score = 0.0
+        text_lower = text.lower()
+
+        # Decimal numbers (e.g. 0.852, 85.4)
+        decimals = len(re.findall(r"\b\d{1,2}\.\d{1,4}\b", text))
+        score += min(decimals, 60) * 2.0
+
+        # Keywords related to segmentation metrics & comparisons
+        for kw in ("dice", "dsc", "hd95", "miou", "iou", "sota", "benchmark", "comparison", "quantitative"):
+            if kw in text_lower:
+                score += 5.0
+
+        # Table markers (including Markdown tables if present)
+        score += text_lower.count("table ") * 4.0
+        score += min(text_lower.count("|"), 100) * 0.2
+
+        # Focal keywords (e.g. specific dataset or proposed model)
+        if focal_keywords:
+            for fkw in focal_keywords:
+                if fkw and len(fkw.strip()) > 2 and fkw.lower().strip() in text_lower:
+                    score += 30.0
+
+        return score
+
     def _build_context_content(
         self,
         manuscript: ParsedManuscript,
         focal_keywords: Optional[List[str]] = None,
-        max_chars: int = 12000,
+        max_chars: Optional[int] = None,
     ) -> str:
         """Composes a relevant text snippet prioritizing focal keywords, introductory pages,
 
@@ -42,50 +80,43 @@ class ExtractionAgent:
         if not manuscript or not getattr(manuscript, "pages_text", None):
             return ""
 
+        if max_chars is None:
+            max_chars = self.get_default_context_chars()
+
         pages_to_include: List[int] = []
         current_len = 0
 
-        if focal_keywords:
-            clean_kw = [kw.lower().strip() for kw in focal_keywords if kw and len(kw.strip()) > 2]
-            # 1. Pages mentioning focal keywords (dataset name, proposed model)
-            for page_num, page_text in sorted(manuscript.pages_text.items()):
-                p_lower = page_text.lower()
-                if any(kw in p_lower for kw in clean_kw):
-                    if page_num not in pages_to_include:
-                        p_len = len(page_text)
-                        if current_len + p_len <= max_chars:
-                            pages_to_include.append(page_num)
-                            current_len += p_len
+        # Always include Page 1 (Title, Abstract, Introduction) to anchor proposed model identification
+        if 1 in manuscript.pages_text:
+            p1_text = manuscript.pages_text[1]
+            pages_to_include.append(1)
+            current_len += len(p1_text)
 
-            # 2. Add table pages
-            for page_num in (manuscript.table_pages or []):
-                if page_num not in pages_to_include and page_num in manuscript.pages_text:
-                    p_len = len(manuscript.pages_text[page_num])
-                    if current_len + p_len <= max_chars:
-                        pages_to_include.append(page_num)
-                        current_len += p_len
+        # Include Page 2 if space allows and no focal keywords are set
+        if not focal_keywords and 2 in manuscript.pages_text and 2 not in pages_to_include:
+            p2_text = manuscript.pages_text[2]
+            if current_len + len(p2_text) < max_chars // 3:
+                pages_to_include.append(2)
+                current_len += len(p2_text)
 
-            # 3. Add intro pages (1, 2) if space remains
-            for page_num in (1, 2):
-                if page_num not in pages_to_include and page_num in manuscript.pages_text:
-                    p_len = len(manuscript.pages_text[page_num])
-                    if current_len + p_len <= max_chars:
-                        pages_to_include.append(page_num)
-                        current_len += p_len
-        else:
-            # Baseline behavior: pages 1 and 2 first
-            for page_num in (1, 2):
-                if page_num in manuscript.pages_text:
-                    pages_to_include.append(page_num)
-                    current_len += len(manuscript.pages_text[page_num])
+        # Rank all other candidate pages by quantitative result density
+        candidate_pages = [
+            p for p in sorted(manuscript.pages_text.keys())
+            if p not in pages_to_include
+        ]
 
-            for page_num in (manuscript.table_pages or []):
-                if page_num not in pages_to_include and page_num in manuscript.pages_text:
-                    p_len = len(manuscript.pages_text[page_num])
-                    if current_len + p_len > max_chars:
-                        continue
-                    pages_to_include.append(page_num)
-                    current_len += p_len
+        scored_candidates = sorted(
+            candidate_pages,
+            key=lambda p: self._score_page(p, manuscript.pages_text[p], focal_keywords),
+            reverse=True,
+        )
+
+        for p in scored_candidates:
+            p_text = manuscript.pages_text[p]
+            p_len = len(p_text)
+            if current_len + p_len <= max_chars:
+                pages_to_include.append(p)
+                current_len += p_len
 
         selected_pages = sorted(pages_to_include)
         return "\n\n--- PAGE BREAK ---\n\n".join(

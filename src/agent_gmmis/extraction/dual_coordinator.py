@@ -23,13 +23,17 @@ def _find_matching_score_index(
     scores: List[RawExtractedScore],
     dataset_name: Optional[str],
     organ_or_task: Optional[str] = None,
+    prompt_type: Optional[str] = None,
+    data_budget_or_setting: Optional[str] = None,
     alias_resolver: Optional[DatasetAliasResolver] = None,
 ) -> Optional[int]:
-    """Finds the index of the RawExtractedScore corresponding to dataset_name and organ_or_task."""
+    """Finds the index of the RawExtractedScore corresponding to dataset_name, organ_or_task, prompt_type and budget."""
     norm_ds = (dataset_name or "").lower().strip()
     resolved_target = alias_resolver.resolve(dataset_name) if (alias_resolver and dataset_name) else None
     canon_target = (resolved_target or dataset_name or "").lower().strip()
     norm_organ = (organ_or_task or "").lower().strip()
+    norm_prompt = (prompt_type or "").lower().strip()
+    norm_budget = (data_budget_or_setting or "").lower().strip()
 
     best_idx = None
     best_score = -1
@@ -45,9 +49,26 @@ def _find_matching_score_index(
         if not ds_match:
             continue
 
+        pts = 1
         s_organ = (s.organ_or_task or "").lower().strip()
-        organ_match = (s_organ == norm_organ) or (not norm_organ) or (not s_organ)
-        pts = 2 if organ_match else 1
+        if s_organ == norm_organ:
+            pts += 3
+        elif not norm_organ or not s_organ:
+            pts += 1
+
+        # Budget match (e.g. "10% labeled" vs "100% labeled")
+        s_budget = (s.data_budget_or_setting or "").lower().strip()
+        if norm_budget and s_budget:
+            if s_budget == norm_budget:
+                pts += 2
+            else:
+                pts -= 1
+
+        # Prompt type match (e.g. "1 point" vs "bounding box")
+        s_prompt = (s.prompt_type or "").lower().strip()
+        if norm_prompt and s_prompt:
+            if s_prompt == norm_prompt:
+                pts += 2
 
         if pts > best_score:
             best_score = pts
@@ -78,6 +99,7 @@ class DualExtractionCoordinator:
     ) -> Tuple[ExtractedPaperData, ExtractedPaperData]:
         """
         Executes parallel extraction of a pre-parsed manuscript using ThreadPoolExecutor.
+        Supports graceful degradation if one agent fails while the other succeeds.
 
         Args:
             manuscript: ParsedManuscript object extracted from the PDF.
@@ -85,20 +107,52 @@ class DualExtractionCoordinator:
         Returns:
             Tuple of (extracted_data_a, extracted_data_b).
         """
+        err_a = None
+        err_b = None
+        extracted_a = None
+        extracted_b = None
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_a = executor.submit(self.agent_a.process_manuscript, manuscript)
             future_b = executor.submit(self.agent_b.process_manuscript, manuscript)
 
-            # Retrieve results; re-raise exceptions with clear origin if either fails
             try:
                 extracted_a = future_a.result()
             except Exception as exc:
-                raise RuntimeError(f"Agent A extraction failed: {exc}") from exc
+                err_a = exc
 
             try:
                 extracted_b = future_b.result()
             except Exception as exc:
-                raise RuntimeError(f"Agent B extraction failed: {exc}") from exc
+                err_b = exc
+
+        # If both agents failed, we truly cannot proceed -> raise RuntimeError
+        if extracted_a is None and extracted_b is None:
+            raise RuntimeError(f"Both extraction agents failed! Agent A: {err_a} | Agent B: {err_b}")
+
+        # Graceful degradation if Agent A failed
+        if extracted_a is None:
+            paper_title = getattr(extracted_b, "paper_title", "") or (manuscript.title if manuscript else "Unknown")
+            model_id = getattr(extracted_b, "proposed_model_id", "") or "Unknown"
+            print(f"   ⚠️ Agent A extraction failed ({err_a}). Degrading gracefully to single-agent mode (Agent B).")
+            extracted_a = ExtractedPaperData(
+                paper_title=paper_title,
+                proposed_model_id=model_id,
+                extraction_notes=f"Agent A failed: {err_a}. Single-agent fallback to Agent B.",
+                extracted_scores=[],
+            )
+
+        # Graceful degradation if Agent B failed
+        if extracted_b is None:
+            paper_title = getattr(extracted_a, "paper_title", "") or (manuscript.title if manuscript else "Unknown")
+            model_id = getattr(extracted_a, "proposed_model_id", "") or "Unknown"
+            print(f"   ⚠️ Agent B extraction failed ({err_b}). Degrading gracefully to single-agent mode (Agent A).")
+            extracted_b = ExtractedPaperData(
+                paper_title=paper_title,
+                proposed_model_id=model_id,
+                extraction_notes=f"Agent B failed: {err_b}. Single-agent fallback to Agent A.",
+                extracted_scores=[],
+            )
 
         return extracted_a, extracted_b
 
@@ -156,6 +210,16 @@ class DualExtractionCoordinator:
         )
 
         deliberation_trajectory: List[DeliberationRoundSummary] = []
+
+        # Check for single-agent fallback: if one agent failed, do not attempt multi-round deliberation on failed agent
+        is_single_agent_fallback = (
+            "Single-agent fallback" in (extracted_a.extraction_notes or "")
+            or "Single-agent fallback" in (extracted_b.extraction_notes or "")
+        )
+        if is_single_agent_fallback:
+            if verbose:
+                print("   ⚠️ Deliberation skipped: Single-agent fallback active due to failure of one extraction agent.")
+            return extracted_a, extracted_b, audit_report, deliberation_trajectory
 
         if max_rounds <= 1 or (audit_report.dispute_count == 0 and audit_report.unconfirmed_count == 0):
             if verbose and max_rounds > 1:
@@ -344,6 +408,8 @@ class DualExtractionCoordinator:
                         extracted_a.extracted_scores,
                         cs.dataset_name,
                         cs.organ_or_task,
+                        prompt_type=cs.prompt_type,
+                        data_budget_or_setting=cs.data_budget_or_setting,
                         alias_resolver=self.alias_resolver,
                     )
                     if idx_a is not None:
@@ -368,6 +434,8 @@ class DualExtractionCoordinator:
                         extracted_b.extracted_scores,
                         cs.dataset_name,
                         cs.organ_or_task,
+                        prompt_type=cs.prompt_type,
+                        data_budget_or_setting=cs.data_budget_or_setting,
                         alias_resolver=self.alias_resolver,
                     )
                     if idx_b is not None:

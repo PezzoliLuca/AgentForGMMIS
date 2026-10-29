@@ -1182,6 +1182,65 @@ Following the execution of the Hybrid run (`Job 5471`), a critical scientific ob
 * **Consensus Stability**: Inter-model disputes were cut from 38 to 18 (**-52.6% reduction**), and unconfirmed single-agent scores plummeted from 466 to 114 (**-75.5% reduction**).
 * **Epistemic Gatekeeping**: Proved that while 7B/8B models hit a confidence wall on 4 complex multi-table manuscripts ($<0.60$), the 14B+Gemini hybrid achieves 89-94% confidence, safely admitting 100% of literature into the curated database.
 
+---
+
+## Session 2026-10-29: Senior Codebase Audit & Architectural Hardening (P0, P1, P2, P3 & Post-Audit Surgical Fixes)
+
+### 1. Objective & Scope
+Perform an end-to-end audit and hardening of the AgentForGMMIS codebase following an external senior peer review (`docs/revisione_stato_attuale.md`). The audit addressed subtle methodological flaws, token budgeting mismatches, schema evolution vulnerabilities, and dual-agent edge cases across four priority tiers and post-implementation audit verifications.
+
+### 2. Implemented Architectural Enhancements
+
+#### Tier P0: Evaluation Fidelity & Methodological Rigor (`evaluator.py`, `run_batch_benchmark.py`, `run_extraction.py`)
+1. **Deduplicated Recall & Oracle Leakage Elimination**:
+   - `evaluator.py` previously evaluated recall over raw extracted instances rather than unique canonical benchmark datasets, allowing duplicate predictions on the same benchmark to artificially inflate recall.
+   - Now tracks `matched_gt_keys` on canonical unique datasets (`len(matched_gt_keys) / len(gt_keys)`).
+   - Removed oracle leakage: the evaluator no longer uses ground truth values to resolve ambiguous predicted prompt regimes.
+2. **Dual Ground-Truth Evaluation (`primary` vs `best`)**:
+   - Introduced dual reporting: evaluates predictions against the active survey regime (`primary` by default) while tracking correspondences against the peak survey regime (`best`).
+   - Added micro-averaged Dice MAE and coverage-adjusted score metric to reward comprehensive extractions without penalizing precision.
+3. **Safe Rendering on NULL Ground Truth**:
+   - Safely renders benchmark summary Markdown tables when datasets are populated in `results_best` but `NULL` in `results_primary`, printing transparent `(best)` or `(primary)` regime annotations and `"N/A"` without raising format string `TypeError`.
+
+#### Tier P1: Context Budgeting, Table Prioritization & Fallback Auditing (`extractor.py`, `pdf_parser.py`, `client.py`, `auditor.py`)
+1. **Token Headroom Realignment & Pre-Trimmer Safety**:
+   - Corrected token estimation divisor in `LLMClient` from an overly pessimistic `2.0` to `3.2` characters per token (`approx_tokens = int(total_chars / 3.2) + 300`).
+   - Replaced mid-prompt slicing with trailing manuscript text trimming (`[... trailing manuscript text trimmed to respect context limit ...]`), preserving intact the high-density result table pages selected by `_score_page()`.
+   - Set default context budget for 16k context window providers (`mufasa`, `ollama`, `vllm`) to `35000` characters in `ExtractionAgent.get_default_context_chars()`.
+2. **PyMuPDF Structured Table Extraction**:
+   - Added PyMuPDF `find_tables()` structured table parsing (`to_markdown()`) to `pdf_parser.py`, elevating tabular structure clarity for dense numerical comparisons.
+3. **Dual-Agent Fallback Restoration**:
+   - Restored automatic delegation to `RepoInspector` and `OutreachAgent` in dual-agent mode when consensus auditing identifies missing scalar evaluation tables.
+
+#### Tier P2: Database Schema Defense, Normalization & Escaping (`database_agent.py`)
+1. **SQLite Schema Evolution Guard**:
+   - Guarded `ALTER TABLE ADD COLUMN` against accidental pollution from anatomical organs (e.g. `Liver`, `Spleen`), modalities (`CT`, `MRI`), and generic placeholders (`Overall`, `Dataset`).
+   - Restricted schema evolution exclusively to concordant public benchmarks verified by consensus or present in the survey registry.
+2. **Unicode NFKC Normalization & Model ID Filtering**:
+   - Added NFKC normalization to resolve typographic ligatures (e.g. `Diﬀ-UNet` $\to$ `Diff-UNet`).
+   - Discarded generic placeholder proposed model IDs (e.g. `Ours`, `Proposed Model`) using paper title fallbacks.
+3. **Cell Deduplication & SQL Escaping**:
+   - Deduplicated updates per `(model_id, canonical_name)` cell and escaped column identifiers using `_escape_ident()`.
+
+#### Tier P3 & Post-Audit Surgical Fixes: Dual-Agent Resilience & Deliberation (`dual_coordinator.py`, `auditor.py`, `client.py`)
+1. **Graceful Degradation Deliberation Short-Circuit**:
+   - When one agent fails during concurrent extraction, `DualExtractionCoordinator` degrades gracefully to single-agent mode.
+   - Deliberation rounds now immediately check `"Single-agent fallback" in extraction_notes` and return early, preventing repeated reinterrogation calls to the failed agent.
+2. **Consensus Certification Guard (`neither_agent_verified_tables`)**:
+   - In `AuditorAgent.audit_consensus()`, `tables_missing` is now strictly conditioned on `neither_agent_verified_tables`.
+   - If Agent A extracts verified benchmark tables from the PDF and Agent B fails, the paper is certified as `FLAGGED_WARNING` with `SINGLE_AGENT_UNCONFIRMED` scores intact, avoiding false routing to `NEEDS_REPO_INSPECTION`.
+3. **Aligned Single-Agent Ablation Check**:
+   - Aligned outer and inner conditions in `AuditorAgent.audit()` so non-canonical ablation extractions (e.g. `RandomAblationTask`) correctly route to `CODE_REPO_AVAILABLE` when code repositories exist.
+4. **vLLM Guided JSON Decoding & Schema Robustness**:
+   - Enabled vLLM structured decoding via `extra_body={"guided_json": raw_schema}` with graceful fallback.
+   - Hardened Pydantic validators in `schemas.py` (`is_baseline_comparison` converting string/null to bool, dropping truncated score entries).
+   - Enforced TLS verification with `certifi` in `repo_inspector.py`.
+
+### 3. Verification & Test Suite
+* **Full Test Suite**: All **113 unit and integration tests passing (100% success rate)** in `3.26s`.
+* **Zero Regressions**: Across `test_auditor.py` (15/15), `test_consensus_auditing.py` (27/27), `test_database_agent.py` (16/16), `test_db_layer.py` (9/9), `test_evaluator.py` (5/5), `test_extraction.py` (16/16), `test_outreach.py` (8/8), `test_repo_inspector.py` (10/10), `test_run_logger.py` (7/7).
+
+
 
 
 

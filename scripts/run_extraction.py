@@ -210,15 +210,10 @@ def main():
     print("👮 AUDITOR AGENT ('IL VIGILE') QUALITY ASSURANCE CERTIFICATION")
     print("=" * 70)
 
-    if not is_dual:
-        from agent_gmmis.auditing.auditor import AuditorAgent
-        db = DatabaseManager(DEFAULT_DB_PATH)
-        auditor = AuditorAgent(db_manager=db)
-        audit_report = auditor.audit(
-            extracted_data,
-            manuscript=manuscript,
-            benchmark_mode=bool(args.evaluate or args.model_id),
-        )
+    db = DatabaseManager(DEFAULT_DB_PATH)
+    auditor = AuditorAgent(db_manager=db)
+
+    if is_dual:
         # Display Consensus Matrix
         print("\n" + "=" * 70)
         print("🤝 DUAL-AGENT INTER-MODEL CONSENSUS MATRIX")
@@ -321,19 +316,26 @@ def main():
     # Step 3.2: Delegation Layer (RepoInspector)
     # -------------------------------------------------------------
     from agent_gmmis.auditing.schemas import AuditStatus
-    if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION and extracted_data.code_repository_url:
-        print("\n" + "=" * 70)
-        print("🔍 DELEGATION LAYER — GITHUB REPO INSPECTOR")
-        print("=" * 70)
-        print(f"Inspecting code repository: {extracted_data.code_repository_url}")
-        from agent_gmmis.auditing.repo_inspector import RepoInspector
-        repo_inspector = RepoInspector()
-        extracted_data, reaudited_report = repo_inspector.inspect_and_update(extracted_data, auditor=auditor)
-        if reaudited_report:
-            audit_report = reaudited_report
-            print(f"✨ Successfully recovered scores from code repository!")
-            print(f"Updated Audit Status: {audit_report.status.value.upper()} (Confidence: {audit_report.confidence_score * 100:.1f}%)")
-            print(f"Total Scores Now Available: {len(extracted_data.extracted_scores)}")
+    if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION:
+        code_url = extracted_data.code_repository_url
+        if not code_url:
+            gt_m = db.get_model(extracted_data.proposed_model_id)
+            if gt_m and gt_m.code:
+                code_url = gt_m.code.strip()
+                extracted_data.code_repository_url = code_url
+        if code_url:
+            print("\n" + "=" * 70)
+            print("🔍 DELEGATION LAYER — GITHUB REPO INSPECTOR")
+            print("=" * 70)
+            print(f"Inspecting code repository: {code_url}")
+            from agent_gmmis.auditing.repo_inspector import RepoInspector
+            repo_inspector = RepoInspector()
+            extracted_data, reaudited_report = repo_inspector.inspect_and_update(extracted_data, auditor=auditor)
+            if reaudited_report:
+                audit_report = reaudited_report
+                print(f"✨ Successfully recovered scores from code repository!")
+                print(f"Updated Audit Status: {audit_report.status.value.upper()} (Confidence: {audit_report.confidence_score * 100:.1f}%)")
+                print(f"Total Scores Now Available: {len(extracted_data.extracted_scores)}")
 
     # Evaluation against Ground Truth (if requested or available)
     gt_model = db.get_model(extracted_data.proposed_model_id)
@@ -349,7 +351,21 @@ def main():
             if report.score_comparisons:
                 print(f"\nDetailed Score Comparisons against {args.compare_source.capitalize()} Report:")
                 comp_table = [
-                    [c["dataset"], c.get("prompt_type", "N/A"), f"{c['predicted']:.4f}", f"{c['ground_truth']:.4f}", f"{c['diff']:.4f}"]
+                    [
+                        c["dataset"],
+                        c.get("prompt_type", "N/A"),
+                        f"{c['predicted']:.4f}" if c.get("predicted") is not None else "N/A",
+                        f"{c['ground_truth']:.4f}" if c.get("ground_truth") is not None else (
+                            f"{c['ground_truth_best']:.4f} (best)" if c.get("ground_truth_best") is not None else (
+                                f"{c['ground_truth_primary']:.4f} (primary)" if c.get("ground_truth_primary") is not None else "N/A"
+                            )
+                        ),
+                        f"{c['diff']:.4f}" if c.get("diff") is not None else (
+                            f"{c['diff_best']:.4f} (best)" if c.get("diff_best") is not None else (
+                                f"{c['diff_primary']:.4f} (primary)" if c.get("diff_primary") is not None else "N/A"
+                            )
+                        ),
+                    ]
                     for c in report.score_comparisons
                 ]
                 print(tabulate(comp_table, headers=["Dataset", "Prompt Setting", "Extracted", f"GT ({args.compare_source.capitalize()})", "Diff (Absolute)"], tablefmt="github"))

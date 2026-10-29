@@ -269,16 +269,23 @@ def main():
 
                 # Delegation Layer: GitHub Repository Inspector
                 repo_recovered = False
-                if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION and extracted.code_repository_url:
-                    print(f"   🔍 [Delegation Layer] Triggering RepoInspector for '{model_id}' ({extracted.code_repository_url})...")
-                    extracted, reaudited_report = repo_inspector.inspect_and_update(extracted, auditor=auditor, manuscript=manuscript)
-                    if reaudited_report:
-                        audit_report = reaudited_report
-                        if audit_report.status not in (AuditStatus.NEEDS_OUTREACH, AuditStatus.NEEDS_REPO_INSPECTION):
-                            repo_recovered = True
-                            print(f"   ✨ RepoInspector recovered scores! New Status: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%)")
-                        else:
-                            print(f"   ℹ️ Repo inspected but lacked benchmark tables. Delegating to OutreachAgent...")
+                if audit_report.status == AuditStatus.NEEDS_REPO_INSPECTION:
+                    code_url = extracted.code_repository_url
+                    if not code_url:
+                        gt_m = db.get_model(model_id)
+                        if gt_m and gt_m.code:
+                            code_url = gt_m.code.strip()
+                            extracted.code_repository_url = code_url
+                    if code_url:
+                        print(f"   🔍 [Delegation Layer] Triggering RepoInspector for '{model_id}' ({code_url})...")
+                        extracted, reaudited_report = repo_inspector.inspect_and_update(extracted, auditor=auditor, manuscript=manuscript)
+                        if reaudited_report:
+                            audit_report = reaudited_report
+                            if audit_report.status not in (AuditStatus.NEEDS_OUTREACH, AuditStatus.NEEDS_REPO_INSPECTION):
+                                repo_recovered = True
+                                print(f"   ✨ RepoInspector recovered scores! New Status: {audit_report.status.value.upper()} (conf={audit_report.confidence_score*100:.0f}%)")
+                            else:
+                                print(f"   ℹ️ Repo inspected but lacked benchmark tables. Delegating to OutreachAgent...")
 
                 # Delegation Layer: OutreachAgent (Author Email Inquiry)
                 outreach_draft = None
@@ -293,6 +300,7 @@ def main():
 
                 # Curation Layer: DatabaseAgent
                 paper_metadata_dict = {
+                    "expected_model_id": model_id,
                     "paper_title": extracted.paper_title,
                     "proposed_model_id": extracted.proposed_model_id,
                     "authors_affiliations": getattr(extracted_a, "authors_affiliations", None),
@@ -421,12 +429,64 @@ def main():
             if idx < len(target_model_ids):
                 time.sleep(3.5)
 
+        # Compute Global Benchmark Metrics across all target models (with fixed GT denominators)
+        total_gt_primary_all = sum(len(evaluator.get_ground_truth_map(m, compare_source="primary")) for m in target_model_ids)
+        total_gt_best_all = sum(len(evaluator.get_ground_truth_map(m, compare_source="best")) for m in target_model_ids)
+        total_gt_active_all = total_gt_best_all if args.compare_source == "best" else total_gt_primary_all
+
+        valid_reports = [it["report"] for it in detailed_reports if it.get("report")]
+        total_matched_benchmarks = sum(r.matched_datasets_count for r in valid_reports)
+        overall_recall = (total_matched_benchmarks / total_gt_active_all) if total_gt_active_all > 0 else 0.0
+
+        # Micro-Averaged Benchmark MAE (sum of |pred - gt| / total matched benchmarks)
+        all_diffs_active = [c["diff"] for r in valid_reports for c in r.score_comparisons if c.get("diff") is not None]
+        all_diffs_primary = [c["diff_primary"] for r in valid_reports for c in r.score_comparisons if c.get("diff_primary") is not None]
+        all_diffs_best = [c["diff_best"] for r in valid_reports for c in r.score_comparisons if c.get("diff_best") is not None]
+        all_diffs_regime = [
+            min([abs(c["predicted"] - v) for v in (c.get("ground_truth_primary"), c.get("ground_truth_best")) if v is not None])
+            for r in valid_reports for c in r.score_comparisons
+            if any(v is not None for v in (c.get("ground_truth_primary"), c.get("ground_truth_best")))
+        ]
+
+        micro_mae_active = (sum(all_diffs_active) / len(all_diffs_active)) if all_diffs_active else None
+        micro_mae_primary = (sum(all_diffs_primary) / len(all_diffs_primary)) if all_diffs_primary else None
+        micro_mae_best = (sum(all_diffs_best) / len(all_diffs_best)) if all_diffs_best else None
+        micro_mae_regime = (sum(all_diffs_regime) / len(all_diffs_regime)) if all_diffs_regime else None
+
+        # Macro-Averaged Paper MAE (unweighted mean of per-paper MAEs)
+        paper_maes_active = [r.dice_mae for r in valid_reports if r.dice_mae is not None]
+        paper_maes_primary = [r.dice_mae_primary for r in valid_reports if r.dice_mae_primary is not None]
+        paper_maes_best = [r.dice_mae_best for r in valid_reports if r.dice_mae_best is not None]
+
+        macro_mae_active = (sum(paper_maes_active) / len(paper_maes_active)) if paper_maes_active else None
+        macro_mae_primary = (sum(paper_maes_primary) / len(paper_maes_primary)) if paper_maes_primary else None
+        macro_mae_best = (sum(paper_maes_best) / len(paper_maes_best)) if paper_maes_best else None
+
+        # Coverage-Adjusted Score
+        coverage_adjusted_score = overall_recall * (1.0 - (micro_mae_active or 0.0))
+        total_time_all = sum(it.get("elapsed", 0.0) for it in detailed_reports)
+
+        # Append summary total row
+        summary_rows_with_total = list(summary_rows)
+        summary_rows_with_total.append([
+            "---", "---", "---", "---", "---", "---", "---"
+        ])
+        summary_rows_with_total.append([
+            "OVERALL BATCH",
+            f"{sum(1 for it in detailed_reports if it.get('audit_report') and it['audit_report'].status.value == 'verified')}/{len(target_model_ids)} verified",
+            f"{sum(it['audit_report'].confidence_score for it in detailed_reports if it.get('audit_report')) / len(target_model_ids):.0%}" if detailed_reports else "N/A",
+            f"{total_matched_benchmarks}/{total_gt_active_all}",
+            f"{overall_recall:.1%}",
+            f"{micro_mae_active:.4f} (micro)" if micro_mae_active is not None else "N/A",
+            f"{total_time_all:.1f}s",
+        ])
+
         # Print Aggregated Summary Table to console and log
         print("\n" + "=" * 80)
         print("📊 BATCH BENCHMARK & AUDIT AGGREGATED REPORT")
         print("=" * 80)
         headers = ["Model ID", "Audit Status", "Confidence", "Datasets Matched", "Recall", "Dice MAE", "Time"]
-        summary_table_str = tabulate(summary_rows, headers=headers, tablefmt="github")
+        summary_table_str = tabulate(summary_rows_with_total, headers=headers, tablefmt="github")
         print(summary_table_str)
 
         # Print Aggregated Database Curation Summary Table
@@ -479,6 +539,22 @@ def main():
             "## Summary Results",
             "",
             summary_table_str,
+            "",
+            "### 📈 Aggregated Benchmark Metrics & Methodological Dual-Check",
+            "",
+            f"- **Overall Benchmark Recall (Fixed GT Denominator)**: `{total_matched_benchmarks}/{total_gt_active_all}` (**`{overall_recall:.1%}`**)",
+            f"  - *Fixed GT Primary Baseline*: `{total_gt_primary_all}` total canonical benchmarks across all {len(target_model_ids)} papers",
+            f"  - *Fixed GT Best Literature Baseline*: `{total_gt_best_all}` total canonical benchmarks across all {len(target_model_ids)} papers",
+            f"- **Micro-Averaged Benchmark MAE (Weighted by Matched Benchmarks)**:",
+            f"  - **Active ({args.compare_source.upper()})**: `{micro_mae_active:.4f}` ({len(all_diffs_active)} benchmarks)" if micro_mae_active is not None else "- Active: N/A",
+            f"  - **Primary Report**: `{micro_mae_primary:.4f}` ({len(all_diffs_primary)} benchmarks)" if micro_mae_primary is not None else "- Primary: N/A",
+            f"  - **Best Literature Record**: `{micro_mae_best:.4f}` ({len(all_diffs_best)} benchmarks)" if micro_mae_best is not None else "- Best: N/A",
+            f"  - **Minimum Regime-Agnostic MAE**: `{micro_mae_regime:.4f}` ({len(all_diffs_regime)} benchmarks)" if micro_mae_regime is not None else "- Regime-Agnostic: N/A",
+            f"- **Macro-Averaged Paper MAE (Unweighted Paper Mean)**:",
+            f"  - **Active ({args.compare_source.upper()})**: `{macro_mae_active:.4f}` ({len(paper_maes_active)} matching papers)" if macro_mae_active is not None else "- Active: N/A",
+            f"  - **Primary Report**: `{macro_mae_primary:.4f}` ({len(paper_maes_primary)} matching papers)" if macro_mae_primary is not None else "- Primary: N/A",
+            f"  - **Best Literature Record**: `{macro_mae_best:.4f}` ({len(paper_maes_best)} matching papers)" if macro_mae_best is not None else "- Best: N/A",
+            f"- **Coverage-Adjusted Accuracy Score**: `{coverage_adjusted_score:.4f}` (`Recall * (1.0 - Micro_MAE)` to penalize survivorship bias)",
             "",
         ]
 
@@ -542,6 +618,23 @@ def main():
                 "total_papers": len(target_model_ids),
                 "run_id": run_logger.run_id,
             },
+            "global_metrics": {
+                "total_target_papers": len(target_model_ids),
+                "total_gt_benchmarks_active": total_gt_active_all,
+                "total_gt_benchmarks_primary": total_gt_primary_all,
+                "total_gt_benchmarks_best": total_gt_best_all,
+                "total_matched_benchmarks": total_matched_benchmarks,
+                "overall_recall": overall_recall,
+                "micro_mae_active": micro_mae_active,
+                "micro_mae_primary": micro_mae_primary,
+                "micro_mae_best": micro_mae_best,
+                "micro_mae_regime_agnostic": micro_mae_regime,
+                "macro_mae_active": macro_mae_active,
+                "macro_mae_primary": macro_mae_primary,
+                "macro_mae_best": macro_mae_best,
+                "coverage_adjusted_score": coverage_adjusted_score,
+                "total_elapsed_seconds": total_time_all,
+            },
             "summary": [
                 {
                     "model_id": row[0],
@@ -603,7 +696,21 @@ def main():
             if rep.score_comparisons:
                 md_lines.append("#### Benchmark Table Matches vs. Ground Truth:")
                 comp_rows = [
-                    [c["dataset"], c.get("prompt_type", "N/A"), f"{c['predicted']:.4f}", f"{c['ground_truth']:.4f}", f"{c['diff']:.4f}"]
+                    [
+                        c["dataset"],
+                        c.get("prompt_type", "N/A"),
+                        f"{c['predicted']:.4f}" if c.get("predicted") is not None else "N/A",
+                        f"{c['ground_truth']:.4f}" if c.get("ground_truth") is not None else (
+                            f"{c['ground_truth_best']:.4f} (best)" if c.get("ground_truth_best") is not None else (
+                                f"{c['ground_truth_primary']:.4f} (primary)" if c.get("ground_truth_primary") is not None else "N/A"
+                            )
+                        ),
+                        f"{c['diff']:.4f}" if c.get("diff") is not None else (
+                            f"{c['diff_best']:.4f} (best)" if c.get("diff_best") is not None else (
+                                f"{c['diff_primary']:.4f} (primary)" if c.get("diff_primary") is not None else "N/A"
+                            )
+                        ),
+                    ]
                     for c in rep.score_comparisons
                 ]
                 md_lines.append(tabulate(comp_rows, headers=["Dataset", "Prompt Setting", "Extracted", "Ground Truth", "Diff (Absolute)"], tablefmt="github"))
@@ -675,6 +782,9 @@ def main():
                 "ground_truth_datasets_count": rep.ground_truth_datasets_count,
                 "dataset_recall": rep.dataset_recall,
                 "dice_mae": rep.dice_mae,
+                "dice_mae_primary": getattr(rep, "dice_mae_primary", None),
+                "dice_mae_best": getattr(rep, "dice_mae_best", None),
+                "dice_mae_regime_agnostic": getattr(rep, "dice_mae_regime_agnostic", None),
                 "score_comparisons": rep.score_comparisons,
                 "extractions_dir": str(item["paper_dir"].relative_to(run_logger.run_dir)) if "paper_dir" in item else None,
                 "is_dual": is_dual,

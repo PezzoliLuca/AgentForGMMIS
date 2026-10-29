@@ -3,6 +3,7 @@
 import datetime
 import json
 import re
+import unicodedata
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from agent_gmmis.auditing.schemas import (
@@ -39,6 +40,40 @@ class DatabaseAgent:
         "proprietary",
         "custom",
         "inhouse",
+    }
+
+    ORGAN_BLACKLIST = {
+        "liver", "spleen", "kidney", "right kidney", "left kidney",
+        "aorta", "pancreas", "gallbladder", "stomach", "heart",
+        "whole heart", "brain", "lung", "right lung", "left lung",
+        "prostate", "bladder", "esophagus", "trachea", "adrenal gland",
+        "colon", "duodenum", "bowel", "rectum", "femur", "bone",
+        "spine", "vertebrae", "eye", "optic chiasm", "thyroid",
+        "ventricle", "myocardium", "atrium", "rib", "clavicle",
+        "tumor", "lesion", "vessel", "artery", "vein", "portal vein",
+        "inferior vena cava", "ivc", "caval vein", "splenic vein",
+    }
+
+    MODALITY_BLACKLIST = {
+        "ct", "mri", "mr", "pet", "x-ray", "xray", "ultrasound", "us",
+        "flair", "t1", "t2", "t1c", "t1ce", "t1w", "t2w", "dwi", "adc",
+        "oct", "fundus", "endoscopy", "dermoscopy", "contrast", "non-contrast",
+    }
+
+    GENERIC_PLACEHOLDER_BLACKLIST = {
+        "dataset", "dataset 1", "dataset 2", "dataset 3", "dataset 4", "dataset 5",
+        "test", "test set", "testset", "testing set", "validation", "val", "val set",
+        "train", "train set", "training", "training set", "benchmark", "benchmarks",
+        "task", "task 1", "task 2", "task 3", "task 4", "task 5",
+        "ours", "proposed", "baseline", "model", "overall", "average", "mean",
+        "metric", "dice", "score", "external", "internal", "public", "private",
+        "unseen", "seen", "challenge", "cohort", "data", "results",
+    }
+
+    GENERIC_MODEL_NAMES = {
+        "ours", "proposed", "baseline", "model", "our method",
+        "proposed method", "our model", "the proposed model", "architecture",
+        "method", "framework", "approach",
     }
 
     WIDE_EVALUATION_TABLES = [
@@ -97,6 +132,8 @@ class DatabaseAgent:
         # 2. Entity Resolution & Model Ingestion SQL
         existing_model = self.db.get_model(model_id)
         if existing_model:
+            model_id = existing_model.id
+            plan.model_id = model_id
             plan.model_action = CurationActionType.UPDATE_MODEL_METADATA
             model_sql, diff_dict = self._generate_model_update_sql(existing_model, paper_metadata)
             plan.model_metadata_diff = diff_dict
@@ -115,13 +152,14 @@ class DatabaseAgent:
         planned_best: Dict[str, float] = {}
         planned_primary: Dict[str, float] = {}
 
-        # Extract score items based on report type
-        score_items = self._extract_score_items(audit_report)
+        # Extract score items based on report type and deduplicate
+        raw_score_items = self._extract_score_items(audit_report)
+        score_items = self._deduplicate_score_items(raw_score_items)
 
         for item in score_items:
-            raw_dataset_name = item.get("dataset_name", "")
+            raw_dataset_name = self._clean_str(item.get("dataset_name", ""))
             resolved = self.alias_resolver.resolve(raw_dataset_name)
-            canonical_name = item.get("canonical_name") or resolved or raw_dataset_name
+            canonical_name = self._clean_str(item.get("canonical_name") or resolved or raw_dataset_name)
             is_private = self._is_private_cohort(raw_dataset_name, item.get("notes", ""))
 
             # A. Epistemic Boundary: Reject private cohorts from wide-table schema
@@ -143,11 +181,44 @@ class DatabaseAgent:
                 continue
 
             # B. Public Benchmark Schema Evolution
+            # Schema evolution can ONLY occur if:
+            # 1. Dataset is not private
+            # 2. Status is CONCORDANT / AGREEMENT
+            # 3. Name is a valid public benchmark (not organ/modality/placeholder)
+            is_concordant = item.get("status") in (
+                ConsensusStatus.CONCORDANT.value,
+                "concordant",
+                "agreement",
+                "discrepancy_resolved",
+            )
+            is_valid_name = self._is_valid_new_benchmark_name(canonical_name)
+
             if canonical_name not in existing_best_cols:
-                schema_change = self._plan_schema_evolution(canonical_name, item)
-                plan.schema_changes.append(schema_change)
-                plan.generated_sql.extend(schema_change.sql_statements)
-                existing_best_cols.add(canonical_name)
+                if is_concordant and is_valid_name:
+                    schema_change = self._plan_schema_evolution(canonical_name, item)
+                    plan.schema_changes.append(schema_change)
+                    plan.generated_sql.extend(schema_change.sql_statements)
+                    existing_best_cols.add(canonical_name)
+                else:
+                    # Non-qualifying candidate: do NOT alter DB schema!
+                    # Divert to provenance comments in results_best_comments
+                    reason = "Single-agent unconfirmed" if not is_concordant else f"Invalid benchmark name '{canonical_name}'"
+                    score_val = item.get("score")
+                    diff = ScoreCurationDiff(
+                        dataset_name=canonical_name,
+                        target_table="results_best_comments",
+                        action=CurationActionType.RECORD_PROVENANCE_COMMENT,
+                        consensus_status=item.get("status", "unknown"),
+                        comment=f"[Schema Guard: {reason}] {canonical_name}: {score_val}",
+                        sql_statement=self._generate_comment_append_sql(
+                            model_id,
+                            f"[Schema Guard: {reason}] {canonical_name}: {score_val}",
+                        ),
+                    )
+                    plan.score_diffs.append(diff)
+                    if diff.sql_statement:
+                        plan.generated_sql.append(diff.sql_statement)
+                    continue  # Do not attempt to UPDATE non-existent column in wide tables!
 
             # C. Epistemic Arbitration & Score Evaluation
             score_diffs = self._evaluate_and_generate_score_sql(
@@ -230,21 +301,83 @@ class DatabaseAgent:
 
         return True, None
 
+    def _clean_str(self, val: Any) -> str:
+        """Normalizes Unicode (NFKC) and strips whitespace."""
+        if val is None:
+            return ""
+        return unicodedata.normalize("NFKC", str(val)).strip()
+
     def _resolve_model_id(
         self,
         audit_report: Union[AuditReport, ConsensusAuditReport],
         paper_metadata: Optional[Dict[str, Any]],
     ) -> str:
-        """Extracts and sanitizes the canonical model identifier."""
+        """
+        Extracts, normalizes (Unicode NFKC), and resolves the canonical model identifier.
+        Prevents placeholder names like 'Ours' or 'Proposed' and links to existing DB models.
+        """
+        candidates: List[str] = []
+
+        if paper_metadata and paper_metadata.get("expected_model_id"):
+            candidates.append(self._clean_str(paper_metadata["expected_model_id"]))
+
         if hasattr(audit_report, "consensus_metadata") and audit_report.consensus_metadata:
             resolved = audit_report.consensus_metadata.resolved_model_id
             if resolved:
-                return resolved.strip()
+                candidates.append(self._clean_str(resolved))
 
         if paper_metadata and paper_metadata.get("proposed_model_id"):
-            return str(paper_metadata["proposed_model_id"]).strip()
+            candidates.append(self._clean_str(paper_metadata["proposed_model_id"]))
 
-        return audit_report.model_id.strip()
+        if hasattr(audit_report, "model_id") and audit_report.model_id:
+            candidates.append(self._clean_str(audit_report.model_id))
+
+        # Filter out generic placeholder names
+        valid_candidates = [
+            c for c in candidates
+            if c and c.lower() not in self.GENERIC_MODEL_NAMES
+        ]
+
+        # 1. Direct match against DB
+        for cand in valid_candidates:
+            existing = self.db.get_model(cand)
+            if existing:
+                return existing.id
+
+        # 2. Case-insensitive and NFKC search against all DB models
+        all_models = self.db.get_all_models()
+        for cand in valid_candidates:
+            cand_norm = cand.lower()
+            for m in all_models:
+                if self._clean_str(m.id).lower() == cand_norm:
+                    return m.id
+
+        # 3. Paper title matching against DB models
+        paper_title = self._clean_str(paper_metadata.get("paper_title") if paper_metadata else None)
+        if paper_title and len(paper_title) >= 12:
+            clean_title = re.sub(r"[^\w\s]", "", paper_title.lower())
+            for m in all_models:
+                m_title_raw = getattr(m, "title", None)
+                if m_title_raw:
+                    m_title = re.sub(r"[^\w\s]", "", self._clean_str(m_title_raw).lower())
+                    if m_title and (m_title == clean_title or (len(m_title) > 15 and m_title in clean_title) or (len(clean_title) > 15 and clean_title in m_title)):
+                        return m.id
+
+        # 4. Fallback to first non-generic candidate
+        if valid_candidates:
+            return valid_candidates[0]
+
+        # 5. Fallback to audit_report.model_id if non-empty, else paper title
+        if hasattr(audit_report, "model_id") and audit_report.model_id:
+            raw = self._clean_str(audit_report.model_id)
+            if raw and raw.lower() not in self.GENERIC_MODEL_NAMES:
+                return raw
+
+        if paper_title:
+            words = paper_title.split()[:4]
+            return "-".join(words)
+
+        return "Unknown-Model"
 
     def _resolve_paper_title(
         self,
@@ -253,7 +386,7 @@ class DatabaseAgent:
     ) -> str:
         """Extracts the paper title."""
         if paper_metadata and paper_metadata.get("paper_title"):
-            return str(paper_metadata["paper_title"]).strip()
+            return self._clean_str(paper_metadata["paper_title"])
         return self._resolve_model_id(audit_report, paper_metadata)
 
     def _resolve_source_reference(self, paper_metadata: Optional[Dict[str, Any]]) -> str:
@@ -264,7 +397,7 @@ class DatabaseAgent:
             return "Manuscript extraction"
 
         url = paper_metadata.get("first_publication_link") or paper_metadata.get("code_repository_url")
-        title = paper_metadata.get("paper_title") or ""
+        title = self._clean_str(paper_metadata.get("paper_title") or "")
         if url:
             return f"{title} ({url})".strip()
         return title or "Manuscript extraction"
@@ -290,6 +423,110 @@ class DatabaseAgent:
 
         return False
 
+    def _is_valid_new_benchmark_name(self, name: str) -> bool:
+        """
+        Validates whether a dataset name qualifies as a legitimate novel 3D public benchmark.
+        Rejects anatomical organs, generic imaging modalities, and placeholder labels.
+        """
+        if not name or not isinstance(name, str):
+            return False
+
+        name_clean = self._clean_str(name)
+        if len(name_clean) < 3 or len(name_clean) > 80:
+            return False
+
+        # Must not be purely numeric or punctuation
+        if re.match(r"^[\d\W_]+$", name_clean):
+            return False
+
+        name_lower = name_clean.lower()
+
+        # Check exact matches against blacklists
+        if name_lower in self.ORGAN_BLACKLIST:
+            return False
+        if name_lower in self.MODALITY_BLACKLIST:
+            return False
+        if name_lower in self.GENERIC_PLACEHOLDER_BLACKLIST:
+            return False
+
+        # Check regex patterns (e.g. "dataset 1", "task 4", "benchmark 2")
+        if re.match(r"^(dataset|task|benchmark|cohort|split|group)\s*\d+$", name_lower):
+            return False
+
+        # Modality phrases: "ct scans", "abdominal ct scans", "chest x-ray", "ct test set", etc.
+        if re.match(r"^(abdominal|chest|head|body|pelvic|brain)?\s*(ct|mri|x-ray|mr|pet)\s*(scan|scans|test set|test|dataset)?$", name_lower):
+            return False
+
+        # Check if the name is purely an organ name plus generic suffix (e.g. "liver tumor", "spleen segmentation")
+        for organ in self.ORGAN_BLACKLIST:
+            if re.match(rf"^{re.escape(organ)}\s*(segmentation|task|subset|mask|roi|eval)?$", name_lower):
+                return False
+
+        return True
+
+    def _deduplicate_score_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Groups score items by canonical_name and selects the single most representative item
+        per dataset to avoid duplicate or conflicting UPDATE statements on the same cell.
+        Prefers Overall / Macro rows, then highest concordant score (peak), resolving organ sub-scores.
+        """
+        if not items:
+            return []
+
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        for item in items:
+            raw_name = self._clean_str(item.get("dataset_name", ""))
+            resolved = self.alias_resolver.resolve(raw_name)
+            canon = self._clean_str(item.get("canonical_name") or resolved or raw_name)
+            grouped.setdefault(canon, []).append(item)
+
+        deduped: List[Dict[str, Any]] = []
+        for canon, group in grouped.items():
+            if len(group) == 1:
+                deduped.append(group[0])
+                continue
+
+            # Check if any overall/macro row exists
+            overall_rows = [
+                x for x in group
+                if self._clean_str(x.get("organ_or_task", "")).lower() in (
+                    "overall", "average", "mean", "macro", "macro-average", "all", "total"
+                )
+            ]
+
+            if overall_rows:
+                # Prefer concordant overall rows, then pick peak score
+                rep = max(
+                    overall_rows,
+                    key=lambda x: (
+                        1 if x.get("status") in (ConsensusStatus.CONCORDANT.value, "concordant", "agreement") else 0,
+                        float(x.get("score") or 0.0),
+                    ),
+                )
+                rep = dict(rep)
+            else:
+                # Multiple sub-organ scores: calculate macro mean
+                numeric_scores = [float(x["score"]) for x in group if x.get("score") is not None]
+                if numeric_scores:
+                    macro_val = round(sum(numeric_scores) / len(numeric_scores), 4)
+                    rep = dict(group[0])
+                    rep["organ_or_task"] = "Overall"
+                    rep["score"] = macro_val
+                    rep["notes"] = f"Synthesized macro mean from {len(numeric_scores)} organ sub-scores"
+                else:
+                    rep = dict(group[0])
+
+            # Check if there is an explicit primary baseline candidate in the group
+            primary_cands = [x for x in group if self._is_primary_setting(x.get("prompt_type", ""))]
+            if primary_cands:
+                best_prim = max(primary_cands, key=lambda x: float(x.get("score") or 0.0))
+                rep["primary_score"] = best_prim.get("score")
+                rep["primary_prompt_type"] = best_prim.get("prompt_type")
+
+            deduped.append(rep)
+
+        return deduped
+
     # ------------------------------------------------------------------
     # Dynamic Wide-Table Schema Evolution
     # ------------------------------------------------------------------
@@ -303,9 +540,11 @@ class DatabaseAgent:
         statements.append(dataset_meta_sql)
 
         # 2. ALTER TABLE for each wide evaluation table
+        esc_col = self._escape_ident(canonical_name)
         for table in self.WIDE_EVALUATION_TABLES:
             col_type = "REAL" if "comments" not in table and "source" not in table else "TEXT"
-            sql = f'ALTER TABLE "{table}" ADD COLUMN "{canonical_name}" {col_type} DEFAULT NULL;'
+            esc_table = self._escape_ident(table)
+            sql = f'ALTER TABLE "{esc_table}" ADD COLUMN "{esc_col}" {col_type} DEFAULT NULL;'
             statements.append(sql)
             tables_altered.append(table)
 
@@ -356,9 +595,23 @@ class DatabaseAgent:
                     "notes": cs.notes or "",
                 })
         else:
-            # Single-agent report: extract discrepancies or anomaly scores
-            # If RawExtractedScore objects were passed through summary or anomalies
-            pass
+            # Single-agent report: extract scores from validated_scores
+            for s in getattr(audit_report, "validated_scores", []):
+                if s.dice_score is not None and not s.is_baseline_comparison:
+                    canon_name = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+                    items.append({
+                        "dataset_name": s.dataset_name,
+                        "canonical_name": canon_name or s.dataset_name,
+                        "organ_or_task": s.organ_or_task or "Overall",
+                        "status": "single_agent_unconfirmed",
+                        "score": s.dice_score,
+                        "score_a": s.dice_score,
+                        "score_b": None,
+                        "delta": None,
+                        "prompt_type": s.prompt_type,
+                        "table_ref": s.table_or_section_ref,
+                        "notes": s.notes or "",
+                    })
 
         return items
 
@@ -385,6 +638,7 @@ class DatabaseAgent:
         # Safe escape
         esc_id = self._escape_sql(model_id)
         esc_source = self._escape_sql(source_ref)
+        esc_col = self._escape_ident(canonical_name)
 
         # -------------------------------------------------------------
         # POLICY 1: DISPUTED SCORES
@@ -395,7 +649,7 @@ class DatabaseAgent:
                 f"(Δ={item.get('delta')}); Ref: {table_ref}"
             )
             esc_comment = self._escape_sql(comment_text)
-            sql = f'UPDATE "results_best_comments" SET "{canonical_name}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+            sql = f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
 
             diffs.append(ScoreCurationDiff(
                 dataset_name=canonical_name,
@@ -417,7 +671,7 @@ class DatabaseAgent:
                     f"Score: {raw_score}; Ref: {table_ref}"
                 )
                 esc_comment = self._escape_sql(comment_text)
-                sql = f'UPDATE "results_best_comments" SET "{canonical_name}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+                sql = f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
 
                 diffs.append(ScoreCurationDiff(
                     dataset_name=canonical_name,
@@ -455,9 +709,9 @@ class DatabaseAgent:
             planned_best[canonical_name] = score_pct
             esc_comment = self._escape_sql(base_comment)
             best_sql = (
-                f'UPDATE "results_best" SET "{canonical_name}" = {score_pct} WHERE ID = \'{esc_id}\';\n'
-                f'UPDATE "results_best_source" SET "{canonical_name}" = \'{esc_source}\' WHERE ID = \'{esc_id}\';\n'
-                f'UPDATE "results_best_comments" SET "{canonical_name}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+                f'UPDATE "results_best" SET "{esc_col}" = {score_pct} WHERE ID = \'{esc_id}\';\n'
+                f'UPDATE "results_best_source" SET "{esc_col}" = \'{esc_source}\' WHERE ID = \'{esc_id}\';\n'
+                f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
             )
             diffs.append(ScoreCurationDiff(
                 dataset_name=canonical_name,
@@ -478,9 +732,9 @@ class DatabaseAgent:
             planned_best[canonical_name] = score_pct
 
             best_sql = (
-                f'UPDATE "results_best" SET "{canonical_name}" = {score_pct} WHERE ID = \'{esc_id}\';\n'
-                f'UPDATE "results_best_source" SET "{canonical_name}" = \'{esc_source}\' WHERE ID = \'{esc_id}\';\n'
-                f'UPDATE "results_best_comments" SET "{canonical_name}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+                f'UPDATE "results_best" SET "{esc_col}" = {score_pct} WHERE ID = \'{esc_id}\';\n'
+                f'UPDATE "results_best_source" SET "{esc_col}" = \'{esc_source}\' WHERE ID = \'{esc_id}\';\n'
+                f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
             )
             diffs.append(ScoreCurationDiff(
                 dataset_name=canonical_name,
@@ -499,8 +753,8 @@ class DatabaseAgent:
             alt_note = f"Alternative evaluation: {score_pct}% ({prompt_type}, {table_ref})"
             esc_note = self._escape_sql(alt_note)
             preserve_sql = (
-                f'UPDATE "results_best_comments" SET "{canonical_name}" = '
-                f'COALESCE("{canonical_name}" || \' | \', \'\') || \'{esc_note}\' '
+                f'UPDATE "results_best_comments" SET "{esc_col}" = '
+                f'COALESCE("{esc_col}" || \' | \', \'\') || \'{esc_note}\' '
                 f"WHERE ID = '{esc_id}';"
             )
             diffs.append(ScoreCurationDiff(
@@ -521,19 +775,23 @@ class DatabaseAgent:
         if current_primary is None:
             current_primary = self.db.get_score_raw(model_id, canonical_name, "results_primary")
 
-        if current_primary is None and self._is_primary_setting(prompt_type):
-            planned_primary[canonical_name] = score_pct
+        primary_score_raw = item.get("primary_score") if item.get("primary_score") is not None else raw_score
+        primary_pt = item.get("primary_prompt_type") if item.get("primary_prompt_type") is not None else prompt_type
+
+        if current_primary is None and self._is_primary_setting(primary_pt) and primary_score_raw is not None:
+            score_primary_pct = round(float(primary_score_raw) * 100.0, 2) if float(primary_score_raw) <= 1.0 else round(float(primary_score_raw), 2)
+            planned_primary[canonical_name] = score_primary_pct
             esc_comment = self._escape_sql(f"{base_comment} (Standardized primary baseline)")
             primary_sql = (
-                f'UPDATE "results_primary" SET "{canonical_name}" = {score_pct} WHERE ID = \'{esc_id}\';\n'
-                f'UPDATE "results_primary_comments" SET "{canonical_name}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+                f'UPDATE "results_primary" SET "{esc_col}" = {score_primary_pct} WHERE ID = \'{esc_id}\';\n'
+                f'UPDATE "results_primary_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
             )
             diffs.append(ScoreCurationDiff(
                 dataset_name=canonical_name,
                 target_table="results_primary",
                 action=CurationActionType.INSERT_SCORE,
                 previous_score=None,
-                new_score=score_pct,
+                new_score=score_primary_pct,
                 consensus_status=status,
                 comment="Primary standardized baseline inserted",
                 sql_statement=primary_sql,
@@ -541,8 +799,10 @@ class DatabaseAgent:
 
         return diffs
 
-    def _is_primary_setting(self, prompt_type: str) -> bool:
+    def _is_primary_setting(self, prompt_type: Optional[str]) -> bool:
         """Determines if the prompt setting qualifies as the standardized primary baseline."""
+        if not prompt_type or not isinstance(prompt_type, str):
+            return False
         pt = prompt_type.lower()
         return "1-point" in pt or "one-prompt" in pt or "1 click" in pt or "standard" in pt or "zero-shot" in pt
 
@@ -676,6 +936,14 @@ class DatabaseAgent:
         if text is None:
             return ""
         return str(text).replace("'", "''")
+
+    def _escape_ident(self, ident: Optional[str]) -> str:
+        """Sanitizes double quotes and control characters for SQL identifiers (tables and columns)."""
+        if ident is None:
+            return ""
+        s = unicodedata.normalize("NFKC", str(ident))
+        s = s.replace("\x00", "").replace(";", "").replace("\n", " ").replace("\r", " ").strip()
+        return s.replace('"', '""')
 
     def _build_executive_summary(self, plan: CurationPlan) -> str:
         """Constructs an executive markdown summary of the curation plan."""

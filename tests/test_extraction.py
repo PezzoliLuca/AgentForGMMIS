@@ -8,7 +8,7 @@ from agent_gmmis.data.db_manager import DatabaseManager
 from agent_gmmis.data.models import InclusionCriteriaCheck
 from agent_gmmis.extraction.evaluator import ExtractionEvaluator
 from agent_gmmis.extraction.extractor import ExtractionAgent
-from agent_gmmis.extraction.pdf_parser import PDFParser
+from agent_gmmis.extraction.pdf_parser import PDFParser, ParsedManuscript
 from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
 from agent_gmmis.llm.client import LLMClient, LLMConfig
 
@@ -223,6 +223,81 @@ class TestExtractionAgentMock:
         data = agent.process_pdf(SAMPLE_PDF_PATH)
         assert isinstance(data, ExtractedPaperData)
 
+    def test_dynamic_context_budget_and_table_prioritization(self):
+        """Verifies that high-density result table pages are prioritized over low-density narrative pages."""
+        from agent_gmmis.extraction.pdf_parser import ParsedManuscript
+
+        # Client configured for Gemini -> 80,000 budget
+        gemini_client = LLMClient(config=LLMConfig(provider="gemini", api_key="dummy"))
+        agent_gemini = ExtractionAgent(llm_client=gemini_client)
+        assert agent_gemini.get_default_context_chars() == 80000
+
+        # Client configured for Mufasa -> 35,000 budget
+        mufasa_client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
+        agent_mufasa = ExtractionAgent(llm_client=mufasa_client)
+        assert agent_mufasa.get_default_context_chars() == 35000
+
+        # Construct a synthetic manuscript where page 10 has the primary results table
+        manuscript = ParsedManuscript(
+            file_path="synthetic.pdf",
+            title="Synthetic Model Paper",
+            total_pages=10,
+            pages_text={
+                1: "Introduction to Synthetic Model for 3D segmentation.",
+                2: "Related Work: CNNs and Transformers have evolved over time." * 20,
+                3: "Methodology overview." * 30,
+                10: "Table 1. SOTA benchmark comparison. BraTS: 0.892, BTCV: 0.854, AMOS: 0.821, FLARE: 0.880, KiTS: 0.875.",
+            },
+            table_pages=[10],
+        )
+
+        # With a tight budget (e.g. 500 chars), Page 1 and Page 10 must be included before Page 2 or Page 3
+        context = agent_mufasa._build_context_content(manuscript, max_chars=400)
+        assert "[Page 1]" in context
+        assert "[Page 10]" in context
+        assert "Table 1. SOTA benchmark comparison" in context
+
+    def test_mufasa_default_budget_does_not_trigger_middle_trimming(self, monkeypatch):
+        """Verifies that 35000-char context budget on mufasa provider does not trigger pre-trimming in LLMClient."""
+        from unittest.mock import MagicMock
+
+        client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
+        agent = ExtractionAgent(llm_client=client)
+        assert agent.get_default_context_chars() == 35000
+
+        # Construct a manuscript with ~32,000 chars of text across pages
+        table_content = "Table 1. SOTA Benchmark: BraTS 0.892, BTCV 0.854, AMOS 0.821. " * 500
+        manuscript = ParsedManuscript(
+            file_path="synthetic_large.pdf",
+            title="Synthetic Model Paper",
+            total_pages=5,
+            pages_text={
+                1: "Introduction to Synthetic Model for 3D segmentation.",
+                2: table_content,
+            },
+            table_pages=[2],
+        )
+
+        captured_messages = []
+        mock_response = MagicMock()
+        mock_response.choices = [
+            MagicMock(message=MagicMock(content='{"paper_title": "Synthetic", "proposed_model_id": "Synthetic", "extracted_scores": []}'))
+        ]
+
+        def fake_create(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+            return mock_response
+
+        monkeypatch.setattr(client._openai_client.chat.completions, "create", fake_create)
+
+        agent.process_manuscript(manuscript)
+
+        assert len(captured_messages) > 0
+        user_message = captured_messages[-1]["content"]
+        # Must never trim the middle text where comparative tables are located
+        assert "[... middle text trimmed to respect context limit ...]" not in user_message
+        assert "Table 1. SOTA Benchmark" in user_message
+
 
 class TestDatasetAliasResolver:
     """Verifies robust resolution of non-standard and challenge aliases."""
@@ -312,5 +387,125 @@ class TestDatasetAliasResolver:
         assert report.dice_mae is not None
         # Mean of 0.972 and 0.724 is 0.848, which matches GT 0.848 exactly
         assert abs(report.dice_mae) < 1e-3
+
+
+class TestPrioritaP3Robustness:
+    """Verifies Priorità P3 robustness fixes: permissive validators, graceful degradation, and collision fixes."""
+
+    def test_pydantic_permissive_is_baseline_comparison(self):
+        """Verifies is_baseline_comparison validator converts None, strings and numbers into valid booleans."""
+        # False cases
+        for val in [None, "Not applicable", "none", "n/a", "false", "no", 0, ""]:
+            s = RawExtractedScore(
+                dataset_name="BraTS",
+                organ_or_task="Overall",
+                dice_score=0.88,
+                is_baseline_comparison=val,
+            )
+            assert s.is_baseline_comparison is False
+
+        # True cases
+        for val in [True, "true", "yes", 1, "baseline", "competitor"]:
+            s = RawExtractedScore(
+                dataset_name="BraTS",
+                organ_or_task="Overall",
+                dice_score=0.88,
+                is_baseline_comparison=val,
+            )
+            assert s.is_baseline_comparison is True
+
+    def test_pydantic_filter_malformed_scores(self):
+        """Verifies that incomplete score dicts missing dataset_name are dropped gracefully."""
+        data = {
+            "paper_title": "Robustness Test",
+            "proposed_model_id": "TestModel",
+            "extracted_scores": [
+                {"dataset_name": "BraTS", "organ_or_task": "Overall", "dice_score": 0.89},
+                {"dataset_name": "", "organ_or_task": "Empty Dataset", "dice_score": 0.50},
+                {"dataset_name": None, "organ_or_task": "Null Dataset", "dice_score": 0.40},
+                {"organ_or_task": "Missing Key", "dice_score": 0.30},
+                {"dataset_name": "BTCV", "organ_or_task": "Overall", "dice_score": 0.82},
+            ],
+        }
+        extracted = ExtractedPaperData.model_validate(data)
+        assert len(extracted.extracted_scores) == 2
+        assert [s.dataset_name for s in extracted.extracted_scores] == ["BraTS", "BTCV"]
+
+    def test_dual_extraction_graceful_degradation_when_one_agent_fails(self):
+        """Verifies that if one extraction agent fails, the coordinator gracefully degrades to single-agent mode."""
+        from unittest.mock import MagicMock
+        from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
+        from agent_gmmis.extraction.pdf_parser import ParsedManuscript
+
+        mock_agent_a = MagicMock()
+        mock_agent_a.process_manuscript.return_value = ExtractedPaperData(
+            paper_title="Survivor Model Paper",
+            proposed_model_id="SurvivorModel",
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BraTS", organ_or_task="Overall", dice_score=0.91),
+            ],
+        )
+
+        mock_agent_b = MagicMock()
+        mock_agent_b.process_manuscript.side_effect = RuntimeError("vLLM connection refused / OOM")
+
+        coord = DualExtractionCoordinator(agent_a=mock_agent_a, agent_b=mock_agent_b)
+        manuscript = ParsedManuscript(
+            file_path="synthetic.pdf",
+            title="Survivor Model Paper",
+            total_pages=2,
+            pages_text={1: "Paper text"},
+        )
+
+        # Must NOT raise RuntimeError!
+        ext_a, ext_b = coord.extract_manuscript_parallel(manuscript)
+
+        assert ext_a.proposed_model_id == "SurvivorModel"
+        assert len(ext_a.extracted_scores) == 1
+        assert ext_b.proposed_model_id == "SurvivorModel"
+        assert len(ext_b.extracted_scores) == 0  # Graceful dummy fallback
+        assert "Single-agent fallback" in ext_b.extraction_notes
+
+    def test_find_matching_score_index_budget_and_prompt_discrimination(self):
+        """Verifies that _find_matching_score_index discriminates between data budgets and prompt types."""
+        from agent_gmmis.extraction.dual_coordinator import _find_matching_score_index
+
+        scores = [
+            RawExtractedScore(
+                dataset_name="BTCV",
+                organ_or_task="Overall",
+                dice_score=0.72,
+                data_budget_or_setting="10% labeled",
+                prompt_type="1 point",
+            ),
+            RawExtractedScore(
+                dataset_name="BTCV",
+                organ_or_task="Overall",
+                dice_score=0.88,
+                data_budget_or_setting="100% labeled",
+                prompt_type="1 point",
+            ),
+        ]
+
+        # Target the 100% budget setting
+        idx_100 = _find_matching_score_index(
+            scores,
+            dataset_name="BTCV",
+            organ_or_task="Overall",
+            data_budget_or_setting="100% labeled",
+            prompt_type="1 point",
+        )
+        assert idx_100 == 1
+
+        # Target the 10% budget setting
+        idx_10 = _find_matching_score_index(
+            scores,
+            dataset_name="BTCV",
+            organ_or_task="Overall",
+            data_budget_or_setting="10% labeled",
+            prompt_type="1 point",
+        )
+        assert idx_10 == 0
+
 
 

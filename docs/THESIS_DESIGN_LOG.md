@@ -761,3 +761,28 @@ On 2026-10-26 and 2026-10-27, the autonomous multi-agent pipeline (`AgentForGMMI
    - When paired with an ultra-fast frontier cloud partner (Gemini Flash), European open-weight models deliver higher consensus agreement (fewer disputes and less unconfirmed single-agent noise) than the Chinese counterpart (Qwen 2.5 14B), while providing strict alignment with European open-weights and data sovereignty standards.
    - Both Mistral models independently and consistently enforced epistemic gatekeeping on `SAM-Med2D` (rejecting it due to 2D slice modality violating the 3D inclusion mandate), a decision that smaller or purely generalist models left unresolved in warning states.
 
+---
+
+### 34. Post-Audit Methodological Hardening & The Refined Evaluation Paradigm
+
+Following a comprehensive peer review audit (`docs/revisione_stato_attuale.md`), the extraction, consensus, and curation architecture underwent a major methodological overhaul prior to the definitive multi-model comparative campaign:
+
+1. **Deduplicated Metric Recall & Oracle Leakage Elimination**:
+   - In previous iterations, recall was measured across raw extracted table entries rather than unique benchmark datasets. In complex papers with multi-organ breakdowns or repetitive ablations, duplicate extractions artificially inflated recall scores.
+   - The metric was reformed to track unique canonical benchmark datasets ($Recall = \frac{|Matched\ Canonical\ Datasets|}{|Ground\ Truth\ Datasets|}$). Furthermore, oracle leakage (using ground-truth values to resolve predicted prompt settings) was strictly eliminated, enforcing pure double-blind epistemic evaluation.
+
+2. **Dual-Regime Ground Truth Evaluation (`primary` vs `best`)**:
+   - Academic medical segmentation foundation models exhibit wide performance divergence across prompt regimes (e.g., 1-point click vs bounding-box prompt in SAM architectures).
+   - In Moglia et al., survey records tracked both `results_primary` (author-declared primary comparison setting) and `results_best` (peak upper-bound performance across all ablation tables).
+   - The evaluation framework now benchmarks predictions simultaneously against both regimes, computing both macro-average and micro-average MAE, and cleanly annotating regime correspondence in Markdown summaries without format crashes on `NULL` entries.
+
+3. **Resolution of the "Mid-Prompt Table Slicing" Pathology**:
+   - A critical empirical finding revealed that conservative token estimators ($2.0\ chars/token$) over-penalized dense PDF markdown text, triggering pre-trimming in `LLMClient` on prompts exceeding ~20,500 characters.
+   - Slicing through the exact midpoint of the prompt (`prompt[:mid - half_trim] + ... + prompt[mid + half_trim:]`) accidentally deleted the central pages of the manuscript, which heuristics had scored and sorted as containing the primary comparative result tables!
+   - Calibrating the estimator to $3.2\ chars/token$, setting the default budget to $35,000$ characters for 16k context window models (`mufasa`, `ollama`), and shifting the truncation target to trailing appendices/references completely resolved this vulnerability, ensuring 100% preservation of comparative tables.
+
+4. **Resilient Dual-Agent Degradation & Fallback Routing**:
+   - In distributed dual-agent architectures, transient backend network failures or timeout errors on one model must not cascade into false pipeline rejections.
+   - When one agent encounters an unrecoverable runtime exception, the coordinator gracefully degrades to single-agent mode while short-circuiting iterative deliberation to prevent deadlocks.
+   - The Auditor's `neither_agent_verified_tables` guard ensures that if the surviving agent extracted verified benchmark tables from the manuscript, the consensus is preserved as `FLAGGED_WARNING` with authentic scores intact, preventing erroneous routing to code repository inspection.
+

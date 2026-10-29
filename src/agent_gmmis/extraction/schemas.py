@@ -65,6 +65,22 @@ class RawExtractedScore(BaseModel):
         description="Qualitative extraction notes or deliberation rationale",
     )
 
+    @field_validator("is_baseline_comparison", mode="before")
+    @classmethod
+    def normalize_baseline_flag(cls, v) -> bool:
+        if v is None:
+            return False
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return bool(v)
+        if isinstance(v, str):
+            s = v.strip().lower()
+            if s in ("true", "1", "yes", "y", "baseline", "competitor"):
+                return True
+            return False
+        return False
+
     @field_validator("dice_score", mode="before")
     @classmethod
     def normalize_score(cls, v) -> Optional[float]:
@@ -124,6 +140,22 @@ class ExtractedPaperData(BaseModel):
         description="All quantitative Dice scores extracted from tables and text",
     )
     extraction_notes: Optional[str] = Field(None, description="Qualitative notes or ambiguities encountered")
+
+    @field_validator("extracted_scores", mode="before")
+    @classmethod
+    def filter_malformed_scores(cls, v):
+        if not isinstance(v, list):
+            return []
+        valid_items = []
+        for item in v:
+            if isinstance(item, dict):
+                ds_name = item.get("dataset_name")
+                if ds_name and isinstance(ds_name, str) and ds_name.strip():
+                    valid_items.append(item)
+            elif isinstance(item, RawExtractedScore):
+                if item.dataset_name and item.dataset_name.strip():
+                    valid_items.append(item)
+        return valid_items
 
     @field_validator("millions_of_parameters", "number_of_gflops", "resources_total_vram_gb", mode="before")
     @classmethod

@@ -553,12 +553,14 @@ class AuditorAgent:
         if scalar_scores and not has_cloned_template_hallucination:
             for s in scalar_scores:
                 canon = self.alias_resolver.resolve(s.dataset_name)
-                # If it's a known canonical benchmark and comes from a table or repository artifact
-                if canon and s.table_or_section_ref and any(t in s.table_or_section_ref.lower() for t in ("table", "readme", ".csv", ".json", "repo")):
+                ref_lower = (s.table_or_section_ref or "").lower()
+                is_explicit_non_table = any(nt in ref_lower for nt in ("section", "sec.", "fig", "text")) and not any(t in ref_lower for t in ("table", "tab", "readme", ".csv", ".json", "repo"))
+                if canon and not is_explicit_non_table:
                     has_canonical_benchmark_table = True
                     break
 
-        if len(scalar_scores) == 0 or has_cloned_template_hallucination or (not has_canonical_benchmark_table and extracted.code_repository_url):
+        has_repo = bool(extracted.code_repository_url or (self.db and self.db.get_model(extracted.proposed_model_id)))
+        if len(scalar_scores) == 0 or has_cloned_template_hallucination or (not has_canonical_benchmark_table and has_repo):
             figures_found = False
             if manuscript is not None:
                 for text in manuscript.pages_text.values():
@@ -570,7 +572,16 @@ class AuditorAgent:
                         figures_found = True
                         break
 
-            if (len(scalar_scores) == 0 or has_cloned_template_hallucination):
+            if (
+                len(scalar_scores) == 0
+                or has_cloned_template_hallucination
+                or (not has_canonical_benchmark_table and bool(extracted.code_repository_url or (self.db and self.db.get_model(extracted.proposed_model_id))))
+            ):
+                if not extracted.code_repository_url and self.db:
+                    gt_m = self.db.get_model(extracted.proposed_model_id)
+                    if gt_m and gt_m.code and "github.com" in gt_m.code.lower():
+                        extracted.code_repository_url = gt_m.code.strip()
+
                 if extracted.code_repository_url and not repo_inspected:
                     data_diagnosis = MissingDataDiagnosis.CODE_REPO_AVAILABLE
                 elif figures_found:
@@ -581,8 +592,15 @@ class AuditorAgent:
         # -------------------------------------------------------------
         # 6. Status Certification & Confidence Calculation
         # -------------------------------------------------------------
+        has_non_hallucination_critical = any(
+            a.severity == "critical" and "template hallucination" not in (a.message or "").lower()
+            for a in anomalies
+        )
         if not passed_screening:
             status = AuditStatus.REJECTED
+        elif has_non_hallucination_critical:
+            status = AuditStatus.REJECTED
+            rejection_reasons.extend(a.message for a in anomalies if a.severity == "critical")
         elif data_diagnosis == MissingDataDiagnosis.CODE_REPO_AVAILABLE:
             status = AuditStatus.NEEDS_REPO_INSPECTION
         elif data_diagnosis == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND:
@@ -643,6 +661,7 @@ class AuditorAgent:
             data_diagnosis=data_diagnosis,
             confidence_score=confidence,
             summary="\n".join(summary_lines),
+            validated_scores=extracted.extracted_scores,
         )
 
     def audit_consensus(
@@ -1040,13 +1059,52 @@ class AuditorAgent:
             return True
 
         has_critical_anomaly = any(is_consensus_critical(a) for a in (report_a.anomalies + report_b.anomalies))
+
+        # Check code repository from extracted metadata or database
+        code_repo_url = (
+            consensus_metadata.code_repository_url
+            or extracted_a.code_repository_url
+            or extracted_b.code_repository_url
+        )
+        if not code_repo_url and self.db:
+            m_id = consensus_metadata.resolved_model_id or extracted_a.proposed_model_id
+            gt_m = self.db.get_model(m_id)
+            if gt_m and gt_m.code and "github.com" in gt_m.code.lower():
+                code_repo_url = gt_m.code.strip()
+                consensus_metadata.code_repository_url = code_repo_url
+
+        # Check if numerical evaluation tables were missing in the manuscript
+        neither_agent_verified_tables = (
+            report_a.status not in (AuditStatus.VERIFIED, AuditStatus.FLAGGED_WARNING)
+            and report_b.status not in (AuditStatus.VERIFIED, AuditStatus.FLAGGED_WARNING)
+        )
+        tables_missing = (
+            neither_agent_verified_tables
+            and (
+                report_a.status in (AuditStatus.NEEDS_REPO_INSPECTION, AuditStatus.NEEDS_OUTREACH)
+                or report_b.status in (AuditStatus.NEEDS_REPO_INSPECTION, AuditStatus.NEEDS_OUTREACH)
+                or (concordant_count == 0 and paired_count == 0)
+            )
+        )
+
+        figures_present = (
+            getattr(report_a, "data_diagnosis", None) == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
+            or getattr(report_b, "data_diagnosis", None) == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
+            or (manuscript is not None and any("figure" in t.lower() or "radar" in t.lower() or "chart" in t.lower() for t in manuscript.pages_text.values()))
+        )
+
         has_repo_inspection = (
-            (report_a.status == AuditStatus.NEEDS_REPO_INSPECTION or report_b.status == AuditStatus.NEEDS_REPO_INSPECTION)
-            and total_unique_benchmarks == 0
+            tables_missing
+            and concordant_count == 0
+            and paired_count == 0
+            and bool(code_repo_url)
         )
         has_outreach = (
-            (report_a.status == AuditStatus.NEEDS_OUTREACH or report_b.status == AuditStatus.NEEDS_OUTREACH)
-            and total_unique_benchmarks == 0
+            tables_missing
+            and concordant_count == 0
+            and paired_count == 0
+            and not bool(code_repo_url)
+            and figures_present
         )
 
         # Datasets where both models achieved concordant agreement
@@ -1119,11 +1177,11 @@ class AuditorAgent:
 
         if not consensus_screening.is_included or has_critical_anomaly:
             final_status = AuditStatus.REJECTED
-        elif has_repo_inspection and total_unique_benchmarks == 0:
+        elif has_repo_inspection and concordant_count == 0:
             final_status = AuditStatus.NEEDS_REPO_INSPECTION
-        elif has_outreach and total_unique_benchmarks == 0:
+        elif has_outreach and concordant_count == 0:
             final_status = AuditStatus.NEEDS_OUTREACH
-        elif has_consensus_dispute:
+        elif has_consensus_dispute or (concordant_count == 0 and unconfirmed_count > 0):
             final_status = AuditStatus.FLAGGED_WARNING
         elif len(all_genuine_outliers) > 0 or confidence < 0.80:
             final_status = AuditStatus.FLAGGED_WARNING

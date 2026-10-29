@@ -216,20 +216,30 @@ class LLMClient:
         schema_json = json.dumps(compact_schema, separators=(",", ":"))
 
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-        approx_tokens = int(total_chars / 2.0) + 400
+        approx_tokens = int(total_chars / 3.2) + 300
         context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
 
         # Guarantee at least max_needed_output tokens of generation headroom by trimming prompt if needed
         required_headroom = max_needed_output + 300
         if approx_tokens > context_limit - required_headroom and len(prompt) > 4000:
             excess_tokens = approx_tokens - (context_limit - required_headroom)
-            excess_chars = int(excess_tokens * 2.2) + 400
-            mid = len(prompt) // 2
-            half_trim = min(mid - 500, max(500, excess_chars // 2))
-            prompt = prompt[: mid - half_trim] + "\n\n[... middle text trimmed to respect context limit ...]\n\n" + prompt[mid + half_trim :]
+            excess_chars = int(excess_tokens * 3.2) + 300
+            
+            # Avoid cutting the middle where comparative tables are located!
+            # If the prompt contains the manuscript content header, trim trailing content (ablation/appendices)
+            marker = "=== MANUSCRIPT CONTENT"
+            if marker in prompt:
+                m_idx = prompt.find(marker)
+                target_len = max(m_idx + 2000, len(prompt) - excess_chars)
+                prompt = prompt[:target_len] + "\n\n[... trailing manuscript text trimmed to respect context limit ...]\n"
+            else:
+                mid = len(prompt) // 2
+                half_trim = min(mid - 500, max(500, excess_chars // 2))
+                prompt = prompt[: mid - half_trim] + "\n\n[... middle text trimmed to respect context limit ...]\n\n" + prompt[mid + half_trim :]
+            
             messages[-1]["content"] = prompt
             total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-            approx_tokens = int(total_chars / 2.0) + 400
+            approx_tokens = int(total_chars / 3.2) + 300
 
         safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 100))
 
@@ -254,14 +264,33 @@ class LLMClient:
         augmented_messages = [dict(m) for m in messages]
         augmented_messages[0]["content"] += f"\n\nYou MUST respond with a valid JSON object strictly conforming to this JSON Schema:\n{schema_json}"
         
+        extra_kwargs: Dict[str, Any] = {}
+        if self.config.provider in ("mufasa", "ollama"):
+            extra_kwargs["extra_body"] = {"guided_json": raw_schema}
+
         try:
-            response = self._openai_client.chat.completions.create(
-                model=self.config.model,
-                messages=augmented_messages,
-                response_format={"type": "json_object"},
-                temperature=self.config.temperature,
-                max_tokens=safe_max_tokens,
-            )
+            try:
+                response = self._openai_client.chat.completions.create(
+                    model=self.config.model,
+                    messages=augmented_messages,
+                    response_format={"type": "json_object"},
+                    temperature=self.config.temperature,
+                    max_tokens=safe_max_tokens,
+                    **extra_kwargs,
+                )
+            except Exception as e:
+                # If backend does not support extra_body={"guided_json": ...}, retry with standard json_object
+                if extra_kwargs and any(k in str(e).lower() for k in ("extra_body", "guided_json", "unknown argument", "unrecognized")):
+                    extra_kwargs.clear()
+                    response = self._openai_client.chat.completions.create(
+                        model=self.config.model,
+                        messages=augmented_messages,
+                        response_format={"type": "json_object"},
+                        temperature=self.config.temperature,
+                        max_tokens=safe_max_tokens,
+                    )
+                else:
+                    raise e
         except Exception as exc:
             # Automatic recovery: if vLLM throws 400 context limit error, dynamically adapt output tokens or trim
             err_str = str(exc)
@@ -283,17 +312,26 @@ class LLMClient:
                         max_tokens=retry_tokens,
                     )
                 else:
-                    # Trim middle of the prompt to fit within context length with full headroom
+                    # Trim trailing manuscript text to fit within context length with full headroom
                     user_content = augmented_messages[-1]["content"]
-                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 400))) * 2.5) + 300
+                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 400))) * 3.2) + 300
                     if len(user_content) > excess_chars + 1000:
-                        mid = len(user_content) // 2
-                        half_trim = excess_chars // 2
-                        augmented_messages[-1]["content"] = (
-                            user_content[: mid - half_trim]
-                            + "\n\n[... middle text trimmed to respect context limit ...]\n\n"
-                            + user_content[mid + half_trim :]
-                        )
+                        marker = "=== MANUSCRIPT CONTENT"
+                        if marker in user_content:
+                            m_idx = user_content.find(marker)
+                            target_len = max(m_idx + 2000, len(user_content) - excess_chars)
+                            augmented_messages[-1]["content"] = (
+                                user_content[:target_len]
+                                + "\n\n[... trailing manuscript text trimmed to respect context limit ...]\n"
+                            )
+                        else:
+                            mid = len(user_content) // 2
+                            half_trim = excess_chars // 2
+                            augmented_messages[-1]["content"] = (
+                                user_content[: mid - half_trim]
+                                + "\n\n[... middle text trimmed to respect context limit ...]\n\n"
+                                + user_content[mid + half_trim :]
+                            )
                         response = self._openai_client.chat.completions.create(
                             model=self.config.model,
                             messages=augmented_messages,

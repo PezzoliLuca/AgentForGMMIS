@@ -168,7 +168,7 @@ class TestOutreachAgent:
         assert "BTCV" in body and "KiTS" in body
         assert "Figure 4" in body
         assert "Mean Dice Similarity Coefficient" in body
-        assert "luca.pezzoli@polimi.it" in body
+        assert "luca2.pezzoli@mail.polimi.it" in body
 
     def test_generate_and_save_draft(self, outreach_agent, mock_medsam_manuscript, tmp_path):
         """Generates draft and writes both valid JSON and Markdown files to disk."""
