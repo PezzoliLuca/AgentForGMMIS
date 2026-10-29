@@ -232,10 +232,10 @@ class TestExtractionAgentMock:
         agent_gemini = ExtractionAgent(llm_client=gemini_client)
         assert agent_gemini.get_default_context_chars() == 80000
 
-        # Client configured for Mufasa -> 28,000 budget
+        # Client configured for Mufasa -> 16,000 budget
         mufasa_client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
         agent_mufasa = ExtractionAgent(llm_client=mufasa_client)
-        assert agent_mufasa.get_default_context_chars() == 28000
+        assert agent_mufasa.get_default_context_chars() == 16000
 
         # Construct a synthetic manuscript where page 10 has the primary results table
         manuscript = ParsedManuscript(
@@ -258,15 +258,15 @@ class TestExtractionAgentMock:
         assert "Table 1. SOTA benchmark comparison" in context
 
     def test_mufasa_default_budget_does_not_trigger_middle_trimming(self, monkeypatch):
-        """Verifies that 28000-char context budget on mufasa provider does not trigger pre-trimming in LLMClient."""
+        """Verifies that 16000-char context budget on mufasa provider does not trigger pre-trimming in LLMClient."""
         from unittest.mock import MagicMock
 
         client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
         agent = ExtractionAgent(llm_client=client)
-        assert agent.get_default_context_chars() == 28000
+        assert agent.get_default_context_chars() == 16000
 
-        # Construct a manuscript with ~24,000 chars of text across pages
-        table_content = "Table 1. SOTA Benchmark: BraTS 0.892, BTCV 0.854, AMOS 0.821. " * 380
+        # Construct a manuscript with ~12,000 chars of text across pages
+        table_content = "Table 1. SOTA Benchmark: BraTS 0.892, BTCV 0.854, AMOS 0.821. " * 190
         manuscript = ParsedManuscript(
             file_path="synthetic_large.pdf",
             title="Synthetic Model Paper",

@@ -38,7 +38,7 @@ class ExtractionAgent:
         if provider == "gemini":
             return 80000
         elif provider in ("mufasa", "ollama", "vllm"):
-            return 28000
+            return 16000
         return 45000
 
     def _score_page(self, page_num: int, text: str, focal_keywords: Optional[List[str]] = None) -> float:

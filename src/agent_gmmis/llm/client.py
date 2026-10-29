@@ -223,14 +223,15 @@ class LLMClient:
         schema_json = json.dumps(compact_schema, separators=(",", ":"))
 
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-        approx_tokens = int(total_chars / 3.0) + 400
+        # Conservative token estimation: 2.3 chars per token + 500 token padding
+        approx_tokens = int(total_chars / 2.3) + 500
         context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
 
         # Guarantee at least max_needed_output tokens of generation headroom by trimming prompt if needed
-        required_headroom = max_needed_output + 400
+        required_headroom = max_needed_output + 500
         if approx_tokens > context_limit - required_headroom and len(prompt) > 4000:
             excess_tokens = approx_tokens - (context_limit - required_headroom)
-            excess_chars = int(excess_tokens * 3.0) + 400
+            excess_chars = int(excess_tokens * 2.3) + 500
             
             # Avoid cutting the middle where comparative tables are located!
             # If the prompt contains the manuscript content header, trim trailing content (ablation/appendices)
@@ -246,9 +247,9 @@ class LLMClient:
             
             messages[-1]["content"] = prompt
             total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-            approx_tokens = int(total_chars / 3.0) + 400
+            approx_tokens = int(total_chars / 2.3) + 500
 
-        safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 400))
+        safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 500))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
         use_beta_parse = self.config.provider not in ("mufasa", "ollama")
@@ -288,18 +289,29 @@ class LLMClient:
                 max_tokens=safe_max_tokens,
             )
         except Exception as exc:
-            # Automatic recovery: if vLLM throws 400 context limit error, dynamically adapt output tokens or trim
+            # Automatic recovery: if vLLM throws 400 context limit error, trim manuscript and retry
             err_str = str(exc)
             if "maximum context length is" in err_str:
-                import re
-                m_ctx = re.search(r"maximum context length is (\d+)", err_str)
-                m_inp = re.search(r"prompt contains at least (\d+)", err_str) or re.search(r"value=(\d+)", err_str)
-                ctx_len = int(m_ctx.group(1)) if m_ctx else 16384
-                inp_len = int(m_inp.group(1)) if m_inp else approx_tokens
-
-                available_tokens = ctx_len - inp_len - 400
-                if available_tokens >= 800:
-                    retry_tokens = min(max_needed_output, available_tokens)
+                user_content = augmented_messages[-1]["content"]
+                trim_chars = 12000
+                if len(user_content) > trim_chars + 2000:
+                    marker = "=== MANUSCRIPT CONTENT"
+                    if marker in user_content:
+                        m_idx = user_content.find(marker)
+                        target_len = max(m_idx + 2000, len(user_content) - trim_chars)
+                        augmented_messages[-1]["content"] = (
+                            user_content[:target_len]
+                            + "\n\n[... trailing manuscript text trimmed to respect context limit ...]\n"
+                        )
+                    else:
+                        mid = len(user_content) // 2
+                        half_trim = trim_chars // 2
+                        augmented_messages[-1]["content"] = (
+                            user_content[: mid - half_trim]
+                            + "\n\n[... middle text trimmed to respect context limit ...]\n\n"
+                            + user_content[mid + half_trim :]
+                        )
+                    retry_tokens = min(max_needed_output, 1500)
                     response = self._openai_client.chat.completions.create(
                         model=self.config.model,
                         messages=augmented_messages,
@@ -308,35 +320,7 @@ class LLMClient:
                         max_tokens=retry_tokens,
                     )
                 else:
-                    # Trim trailing manuscript text to fit within context length with full headroom
-                    user_content = augmented_messages[-1]["content"]
-                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 600))) * 3.0) + 500
-                    if len(user_content) > excess_chars + 1000:
-                        marker = "=== MANUSCRIPT CONTENT"
-                        if marker in user_content:
-                            m_idx = user_content.find(marker)
-                            target_len = max(m_idx + 2000, len(user_content) - excess_chars)
-                            augmented_messages[-1]["content"] = (
-                                user_content[:target_len]
-                                + "\n\n[... trailing manuscript text trimmed to respect context limit ...]\n"
-                            )
-                        else:
-                            mid = len(user_content) // 2
-                            half_trim = excess_chars // 2
-                            augmented_messages[-1]["content"] = (
-                                user_content[: mid - half_trim]
-                                + "\n\n[... middle text trimmed to respect context limit ...]\n\n"
-                                + user_content[mid + half_trim :]
-                            )
-                        response = self._openai_client.chat.completions.create(
-                            model=self.config.model,
-                            messages=augmented_messages,
-                            response_format={"type": "json_object"},
-                            temperature=self.config.temperature,
-                            max_tokens=max_needed_output,
-                        )
-                    else:
-                        raise exc
+                    raise exc
             else:
                 raise exc
 
