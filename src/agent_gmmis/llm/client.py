@@ -198,32 +198,39 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         # Calculate realistic output token budget for structured JSON response:
-        # ExtractedPaperData needs at most ~2800 tokens (including thought_process and 30+ benchmark rows)
+        # ExtractedPaperData needs at most ~2048 tokens (including thought_process and 30+ benchmark rows)
         # Reinterrogation responses need at most ~800 tokens.
         resp_name = getattr(response_model, "__name__", "")
-        max_needed_output = 3500 if resp_name == "ExtractedPaperData" else 800
+        max_needed_output = 2048 if resp_name == "ExtractedPaperData" else 800
 
-        # Clean and compact schema representation to preserve context tokens
+        # Clean, inline and compact schema representation to preserve context tokens and eliminate $defs
         raw_schema = response_model.model_json_schema()
-        def _compact_schema_dict(d: Any) -> Any:
+        defs = raw_schema.get("$defs", {})
+
+        def _inline_and_compact(d: Any) -> Any:
             if isinstance(d, dict):
-                return {k: _compact_schema_dict(v) for k, v in d.items() if k not in ("title", "default")}
+                if "$ref" in d:
+                    ref_key = d["$ref"].split("/")[-1]
+                    if ref_key in defs:
+                        return _inline_and_compact(defs[ref_key])
+                return {k: _inline_and_compact(v) for k, v in d.items() if k not in ("title", "default", "$defs")}
             elif isinstance(d, list):
-                return [_compact_schema_dict(v) for v in d]
+                return [_inline_and_compact(v) for v in d]
             return d
 
-        compact_schema = _compact_schema_dict(raw_schema)
+        compact_schema = _inline_and_compact(raw_schema)
+        compact_schema.pop("$defs", None)
         schema_json = json.dumps(compact_schema, separators=(",", ":"))
 
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-        approx_tokens = int(total_chars / 3.2) + 300
+        approx_tokens = int(total_chars / 3.0) + 400
         context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
 
         # Guarantee at least max_needed_output tokens of generation headroom by trimming prompt if needed
-        required_headroom = max_needed_output + 300
+        required_headroom = max_needed_output + 400
         if approx_tokens > context_limit - required_headroom and len(prompt) > 4000:
             excess_tokens = approx_tokens - (context_limit - required_headroom)
-            excess_chars = int(excess_tokens * 3.2) + 300
+            excess_chars = int(excess_tokens * 3.0) + 400
             
             # Avoid cutting the middle where comparative tables are located!
             # If the prompt contains the manuscript content header, trim trailing content (ablation/appendices)
@@ -239,9 +246,9 @@ class LLMClient:
             
             messages[-1]["content"] = prompt
             total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-            approx_tokens = int(total_chars / 3.2) + 300
+            approx_tokens = int(total_chars / 3.0) + 400
 
-        safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 100))
+        safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 400))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
         use_beta_parse = self.config.provider not in ("mufasa", "ollama")
@@ -261,36 +268,25 @@ class LLMClient:
             except Exception:
                 pass
 
+        top_properties = list(raw_schema.get("properties", {}).keys())
+        top_keys_hint = ", ".join(f'"{p}"' for p in top_properties) if top_properties else ""
         augmented_messages = [dict(m) for m in messages]
-        augmented_messages[0]["content"] += f"\n\nYou MUST respond with a valid JSON object strictly conforming to this JSON Schema:\n{schema_json}"
-        
-        extra_kwargs: Dict[str, Any] = {}
-        if self.config.provider in ("mufasa", "ollama"):
-            extra_kwargs["extra_body"] = {"guided_json": raw_schema}
+        augmented_messages[0]["content"] += (
+            "\n\nCRITICAL INSTRUCTIONS FOR STRUCTURED JSON OUTPUT:\n"
+            "1. You MUST respond ONLY with a raw, valid JSON object.\n"
+            "2. Do NOT echo or output schema definitions, do NOT output '$defs', and do NOT output any conversational text or markdown explanation.\n"
+            f"3. Your output JSON MUST begin with '{{' and contain the instance data with top-level keys: [{top_keys_hint}].\n"
+            f"4. Target JSON Schema:\n{schema_json}"
+        )
 
         try:
-            try:
-                response = self._openai_client.chat.completions.create(
-                    model=self.config.model,
-                    messages=augmented_messages,
-                    response_format={"type": "json_object"},
-                    temperature=self.config.temperature,
-                    max_tokens=safe_max_tokens,
-                    **extra_kwargs,
-                )
-            except Exception as e:
-                # If backend does not support extra_body={"guided_json": ...}, retry with standard json_object
-                if extra_kwargs and any(k in str(e).lower() for k in ("extra_body", "guided_json", "unknown argument", "unrecognized")):
-                    extra_kwargs.clear()
-                    response = self._openai_client.chat.completions.create(
-                        model=self.config.model,
-                        messages=augmented_messages,
-                        response_format={"type": "json_object"},
-                        temperature=self.config.temperature,
-                        max_tokens=safe_max_tokens,
-                    )
-                else:
-                    raise e
+            response = self._openai_client.chat.completions.create(
+                model=self.config.model,
+                messages=augmented_messages,
+                response_format={"type": "json_object"},
+                temperature=self.config.temperature,
+                max_tokens=safe_max_tokens,
+            )
         except Exception as exc:
             # Automatic recovery: if vLLM throws 400 context limit error, dynamically adapt output tokens or trim
             err_str = str(exc)
@@ -301,9 +297,9 @@ class LLMClient:
                 ctx_len = int(m_ctx.group(1)) if m_ctx else 16384
                 inp_len = int(m_inp.group(1)) if m_inp else approx_tokens
 
-                min_safe_headroom = min(max_needed_output, 2500)
-                if inp_len + min_safe_headroom <= ctx_len:
-                    retry_tokens = max(min_safe_headroom, ctx_len - inp_len - 64)
+                available_tokens = ctx_len - inp_len - 400
+                if available_tokens >= 800:
+                    retry_tokens = min(max_needed_output, available_tokens)
                     response = self._openai_client.chat.completions.create(
                         model=self.config.model,
                         messages=augmented_messages,
@@ -314,7 +310,7 @@ class LLMClient:
                 else:
                     # Trim trailing manuscript text to fit within context length with full headroom
                     user_content = augmented_messages[-1]["content"]
-                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 400))) * 3.2) + 300
+                    excess_chars = int((inp_len - (ctx_len - (max_needed_output + 600))) * 3.0) + 500
                     if len(user_content) > excess_chars + 1000:
                         marker = "=== MANUSCRIPT CONTENT"
                         if marker in user_content:
@@ -353,19 +349,38 @@ class LLMClient:
             raw_text = raw_text.split("```")[1].split("```")[0].strip()
         raw_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL).strip()
 
+        # Extract outer JSON structure if model included extra preamble or conversational text
+        first_brace = raw_text.find("{")
+        last_brace = raw_text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            extracted_json = raw_text[first_brace : last_brace + 1]
+            try:
+                return response_model.model_validate_json(extracted_json)
+            except Exception:
+                pass
+
         try:
             return response_model.model_validate_json(raw_text)
         except Exception:
             # Bulletproof healing: repair unclosed quotes, drop incomplete objects, and balance bracket stack
             s = raw_text.strip()
+            if first_brace != -1:
+                s = raw_text[first_brace:].strip()
 
             # Step 1: If truncated inside an array of objects (like extracted_scores),
-            # rewind to the last completely closed object `}` after the last `[`
+            # rewind to the last completely closed object `}` after the last `[`,
+            # or drop incomplete element if first element was truncated
             last_sq = s.rfind("[")
             if last_sq != -1:
                 last_brace_after_sq = s.rfind("}", last_sq)
                 if last_brace_after_sq != -1:
-                    candidate = s[:last_brace_after_sq + 1] + "]}"
+                    candidate = s[: last_brace_after_sq + 1] + "]}"
+                    try:
+                        return response_model.model_validate_json(candidate)
+                    except Exception:
+                        pass
+                else:
+                    candidate = s[: last_sq + 1] + "]}"
                     try:
                         return response_model.model_validate_json(candidate)
                     except Exception:

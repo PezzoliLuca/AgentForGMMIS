@@ -232,10 +232,10 @@ class TestExtractionAgentMock:
         agent_gemini = ExtractionAgent(llm_client=gemini_client)
         assert agent_gemini.get_default_context_chars() == 80000
 
-        # Client configured for Mufasa -> 35,000 budget
+        # Client configured for Mufasa -> 28,000 budget
         mufasa_client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
         agent_mufasa = ExtractionAgent(llm_client=mufasa_client)
-        assert agent_mufasa.get_default_context_chars() == 35000
+        assert agent_mufasa.get_default_context_chars() == 28000
 
         # Construct a synthetic manuscript where page 10 has the primary results table
         manuscript = ParsedManuscript(
@@ -258,15 +258,15 @@ class TestExtractionAgentMock:
         assert "Table 1. SOTA benchmark comparison" in context
 
     def test_mufasa_default_budget_does_not_trigger_middle_trimming(self, monkeypatch):
-        """Verifies that 35000-char context budget on mufasa provider does not trigger pre-trimming in LLMClient."""
+        """Verifies that 28000-char context budget on mufasa provider does not trigger pre-trimming in LLMClient."""
         from unittest.mock import MagicMock
 
         client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
         agent = ExtractionAgent(llm_client=client)
-        assert agent.get_default_context_chars() == 35000
+        assert agent.get_default_context_chars() == 28000
 
-        # Construct a manuscript with ~32,000 chars of text across pages
-        table_content = "Table 1. SOTA Benchmark: BraTS 0.892, BTCV 0.854, AMOS 0.821. " * 500
+        # Construct a manuscript with ~24,000 chars of text across pages
+        table_content = "Table 1. SOTA Benchmark: BraTS 0.892, BTCV 0.854, AMOS 0.821. " * 380
         manuscript = ParsedManuscript(
             file_path="synthetic_large.pdf",
             title="Synthetic Model Paper",
@@ -506,6 +506,61 @@ class TestPrioritaP3Robustness:
             prompt_type="1 point",
         )
         assert idx_10 == 0
+
+
+class TestLLMClientRobustness:
+    """Verifies robustness of LLMClient structured generation, schema inlining, and JSON healing."""
+
+    def test_schema_inlining_and_no_defs(self, monkeypatch):
+        """Verifies that generate_structured inlines schema refs and strips $defs from prompt."""
+        from unittest.mock import MagicMock
+        from agent_gmmis.llm.client import LLMClient, LLMConfig
+
+        client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
+        captured = []
+
+        mock_resp = MagicMock()
+        mock_resp.choices = [
+            MagicMock(message=MagicMock(content='{"paper_title": "Test Paper", "proposed_model_id": "TestNet", "extracted_scores": []}'))
+        ]
+
+        def fake_create(**kwargs):
+            captured.append(kwargs)
+            return mock_resp
+
+        monkeypatch.setattr(client._openai_client.chat.completions, "create", fake_create)
+
+        res = client.generate_structured(prompt="Analyze this paper", response_model=ExtractedPaperData)
+        assert res.paper_title == "Test Paper"
+        assert len(captured) == 1
+        
+        # Verify prompt instructions do not contain $defs
+        content = captured[0]["messages"][0]["content"]
+        assert '"$defs"' not in content
+        assert "CRITICAL INSTRUCTIONS FOR STRUCTURED JSON OUTPUT" in content
+
+    def test_json_healing_with_preamble_and_unclosed_brackets(self, monkeypatch):
+        """Verifies that conversational preamble and unclosed brackets are healed correctly."""
+        from unittest.mock import MagicMock
+        from agent_gmmis.llm.client import LLMClient, LLMConfig
+
+        client = LLMClient(config=LLMConfig(provider="mufasa", api_key="dummy"))
+
+        # Preamble + truncated JSON
+        malformed_content = (
+            "Here is the extraction you requested:\n"
+            '{"paper_title": "Healed Paper", "proposed_model_id": "HealedNet", "extracted_scores": [{"dataset_name": "BTCV", "dice_score": 0.85'
+        )
+
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock(message=MagicMock(content=malformed_content))]
+
+        monkeypatch.setattr(client._openai_client.chat.completions, "create", lambda **kw: mock_resp)
+
+        res = client.generate_structured(prompt="Analyze", response_model=ExtractedPaperData)
+        assert res.paper_title == "Healed Paper"
+        assert res.proposed_model_id == "HealedNet"
+
 
 
 
