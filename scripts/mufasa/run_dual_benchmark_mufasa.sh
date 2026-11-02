@@ -24,6 +24,7 @@
 mkdir -p logs
 
 # Activate Python environment on Mufasa
+export PATH="/opt/shared/sw/amd/gcc-13.3.0/slurm-25.05.4/bin:$PATH"
 if [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
     source "$HOME/AgentForGMMIS/venv/bin/activate"
 elif [ -f ".venv/bin/activate" ]; then
@@ -92,7 +93,7 @@ vllm serve "$MODEL_NAME" \
     --gpu-memory-utilization 0.90 \
     --enforce-eager \
     --trust-remote-code \
-    "${TEMPLATE_ARGS[@]}" &
+    "${TEMPLATE_ARGS[@]}" > "logs/vllm_server_a_${SLURM_JOB_ID}.log" 2>&1 &
 VLLM_PID=$!
 
 # Trap signals to ensure background vLLM is killed on exit/error
@@ -105,6 +106,9 @@ ELAPSED=0
 until curl -sf http://localhost:$PORT/health > /dev/null || [ $ELAPSED -ge $MAX_WAIT ]; do
     if ! kill -0 $VLLM_PID 2>/dev/null; then
         echo "❌ vLLM server process died during startup."
+        if [ -f "logs/vllm_server_a_${SLURM_JOB_ID}.log" ]; then
+            cat "logs/vllm_server_a_${SLURM_JOB_ID}.log" | tail -n 25
+        fi
         exit 1
     fi
     sleep 5

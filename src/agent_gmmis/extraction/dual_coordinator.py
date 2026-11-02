@@ -83,13 +83,15 @@ class DualExtractionCoordinator:
     and orchestrates double-blind multi-round deliberation.
     """
 
+    _SENTINEL = object()
+
     def __init__(
         self,
-        agent_a: Optional[ExtractionAgent] = None,
-        agent_b: Optional[ExtractionAgent] = None,
+        agent_a: Any = _SENTINEL,
+        agent_b: Any = _SENTINEL,
     ):
-        self.agent_a = agent_a or ExtractionAgent()
-        self.agent_b = agent_b or ExtractionAgent()
+        self.agent_a = ExtractionAgent() if agent_a is self._SENTINEL else agent_a
+        self.agent_b = ExtractionAgent() if agent_b is self._SENTINEL else agent_b
         self.parser = PDFParser()
         self.alias_resolver = DatasetAliasResolver()
 
@@ -180,16 +182,20 @@ class DualExtractionCoordinator:
         tolerance: float = 0.01,
         benchmark_mode: bool = False,
         verbose: bool = True,
+        pre_extracted_a: Optional[ExtractedPaperData] = None,
+        agent_a_online: bool = True,
+        agent_b_online: bool = True,
     ) -> Tuple[ExtractedPaperData, ExtractedPaperData, ConsensusAuditReport, List[DeliberationRoundSummary]]:
         """
         Executes parallel extraction and orchestrates double-blind iterative deliberation.
 
         Protocol:
-        1. Round 1: Conduct initial independent parallel extraction with Agent A and Agent B.
+        1. Round 1: Conduct initial independent parallel extraction with Agent A and Agent B
+           (or reuse pre_extracted_a when running in 2-stage sequential dual mode).
         2. Audit consensus: identify DISPUTED benchmarks and SINGLE_AGENT_UNCONFIRMED omissions.
         3. If disputes/omissions exist and max_rounds > 1, execute iterative deliberation rounds:
-           - For DISPUTED scores: re-interrogate both Agent A and Agent B blindly.
-           - For UNCONFIRMED omissions: re-interrogate the omitting agent blindly.
+           - For DISPUTED scores: re-interrogate online agents blindly.
+           - For UNCONFIRMED omissions: re-interrogate omitting agent blindly if online.
            - Update extracted scores without sycophancy (agents maintain stances if verified).
            - Re-audit consensus.
            - Terminate early if all benchmarks become CONCORDANT or epistemic equilibrium is reached.
@@ -199,8 +205,21 @@ class DualExtractionCoordinator:
         """
         from agent_gmmis.auditing.schemas import ConsensusStatus
 
-        # Round 1: Initial parallel extraction
-        extracted_a, extracted_b = self.extract_manuscript_parallel(manuscript)
+        # Round 1: Initial extraction (parallel or using pre-extracted Agent A)
+        if pre_extracted_a is not None:
+            extracted_a = pre_extracted_a
+            if agent_b_online and self.agent_b is not None:
+                extracted_b = self.agent_b.process_manuscript(manuscript)
+            else:
+                extracted_b = ExtractedPaperData(
+                    paper_title=manuscript.title if manuscript else "Proposed Model",
+                    proposed_model_id=manuscript.title if manuscript else "Proposed Model",
+                    extraction_notes="Agent B offline.",
+                    extracted_scores=[],
+                )
+        else:
+            extracted_a, extracted_b = self.extract_manuscript_parallel(manuscript)
+
         audit_report = auditor.audit_consensus(
             extracted_a,
             extracted_b,
@@ -276,14 +295,14 @@ class DualExtractionCoordinator:
                 ds_name_display = scores_a_d[0].dataset_name if scores_a_d else (scores_b_d[0].dataset_name if scores_b_d else c_ds)
 
                 # If Agent A has multi-organ breakdown (>=2 scores) but lacks Overall score
-                if len(scores_a_d) >= 2 and not has_overall_a:
+                if agent_a_online and self.agent_a is not None and len(scores_a_d) >= 2 and not has_overall_a:
                     if ("granularity_a", c_ds) not in seen_queries:
                         organs_a = [s.organ_or_task for s in scores_a_d if s.organ_or_task]
                         queries_to_run.append(("granularity_a", c_ds, (ds_name_display, organs_a)))
                         seen_queries.add(("granularity_a", c_ds))
 
                 # If Agent B has multi-organ breakdown (>=2 scores) but lacks Overall score
-                if len(scores_b_d) >= 2 and not has_overall_b:
+                if agent_b_online and self.agent_b is not None and len(scores_b_d) >= 2 and not has_overall_b:
                     if ("granularity_b", c_ds) not in seen_queries:
                         organs_b = [s.organ_or_task for s in scores_b_d if s.organ_or_task]
                         queries_to_run.append(("granularity_b", c_ds, (ds_name_display, organs_b)))
@@ -293,35 +312,37 @@ class DualExtractionCoordinator:
             for cs in audit_report.consensus_scores:
                 canon_ds = cs.canonical_dataset_name or cs.dataset_name or "Unknown"
                 if cs.status == ConsensusStatus.DISPUTED:
-                    # Query both agents blindly on discrepancy, distinguishing by organ/task
+                    # Query online agents blindly on discrepancy, distinguishing by organ/task
                     item_key = f"{canon_ds}::{cs.organ_or_task or 'Overall'}"
-                    if ("dispute_a", item_key) not in seen_queries:
+                    if agent_a_online and self.agent_a is not None and ("dispute_a", item_key) not in seen_queries:
                         queries_to_run.append(("dispute_a", item_key, cs))
                         seen_queries.add(("dispute_a", item_key))
-                    if ("dispute_b", item_key) not in seen_queries:
+                    if agent_b_online and self.agent_b is not None and ("dispute_b", item_key) not in seen_queries:
                         queries_to_run.append(("dispute_b", item_key, cs))
                         seen_queries.add(("dispute_b", item_key))
                 elif cs.status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED:
                     if cs.score_a is not None and cs.score_b is None:
-                        # Agent B omitted - query only if Agent B has zero scores for canon_ds
-                        has_any_b = any(
-                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == canon_ds.lower()
-                            for s in extracted_b.extracted_scores
-                            if not s.is_baseline_comparison
-                        )
-                        if not has_any_b and ("omission_b", canon_ds) not in seen_queries:
-                            queries_to_run.append(("omission_b", canon_ds, cs))
-                            seen_queries.add(("omission_b", canon_ds))
+                        # Agent B omitted - query only if Agent B is online and has zero scores for canon_ds
+                        if agent_b_online and self.agent_b is not None:
+                            has_any_b = any(
+                                (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == canon_ds.lower()
+                                for s in extracted_b.extracted_scores
+                                if not s.is_baseline_comparison
+                            )
+                            if not has_any_b and ("omission_b", canon_ds) not in seen_queries:
+                                queries_to_run.append(("omission_b", canon_ds, cs))
+                                seen_queries.add(("omission_b", canon_ds))
                     elif cs.score_b is not None and cs.score_a is None:
-                        # Agent A omitted - query only if Agent A has zero scores for canon_ds
-                        has_any_a = any(
-                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == canon_ds.lower()
-                            for s in extracted_a.extracted_scores
-                            if not s.is_baseline_comparison
-                        )
-                        if not has_any_a and ("omission_a", canon_ds) not in seen_queries:
-                            queries_to_run.append(("omission_a", canon_ds, cs))
-                            seen_queries.add(("omission_a", canon_ds))
+                        # Agent A omitted - query only if Agent A is online and has zero scores for canon_ds
+                        if agent_a_online and self.agent_a is not None:
+                            has_any_a = any(
+                                (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == canon_ds.lower()
+                                for s in extracted_a.extracted_scores
+                                if not s.is_baseline_comparison
+                            )
+                            if not has_any_a and ("omission_a", canon_ds) not in seen_queries:
+                                queries_to_run.append(("omission_a", canon_ds, cs))
+                                seen_queries.add(("omission_a", canon_ds))
 
             # Execute re-interrogations concurrently
             results: Dict[Tuple[str, str], ReinterrogationScoreResponse] = {}

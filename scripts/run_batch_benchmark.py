@@ -20,8 +20,9 @@ from agent_gmmis.data.db_manager import DatabaseManager
 from agent_gmmis.extraction.evaluator import ExtractionEvaluator
 from agent_gmmis.extraction.extractor import ExtractionAgent
 from agent_gmmis.extraction.paper_fetcher import PaperFetcher
-from agent_gmmis.extraction.run_logger import RunLogger, archive_legacy_flat_logs
+from agent_gmmis.extraction.run_logger import RunLogger, archive_legacy_flat_logs, sanitize_filename
 from agent_gmmis.llm.client import LLMClient, LLMConfig
+from agent_gmmis.llm.registry import resolve_model_profile
 
 
 def main():
@@ -97,6 +98,19 @@ def main():
         help="Minimum confidence threshold for single-agent unconfirmed scores (default: 0.85).",
     )
     parser.add_argument(
+        "--staged-mode",
+        type=str,
+        default="none",
+        choices=["none", "stage1-extract-a", "stage2-extract-b-and-reconcile"],
+        help="2-stage sequential dual-agent mode for large models on a single GPU.",
+    )
+    parser.add_argument(
+        "--stage-cache-dir",
+        type=str,
+        default=None,
+        help="Directory to cache/read Stage 1 Agent A extractions (default: logs/stage_cache/<tag>)",
+    )
+    parser.add_argument(
         "--archive-legacy",
         action="store_true",
         default=False,
@@ -111,9 +125,18 @@ def main():
 
     provider_a = args.provider_a or args.provider or "gemini"
     model_a = args.model_a or args.model or "gemini-3.5-flash-lite"
+    prof_a = resolve_model_profile(model_a, provider_hint=provider_a)
+    model_a = prof_a.hf_repo_or_id
+    provider_a = prof_a.provider if (args.provider_a is None and args.provider is None) else provider_a
+
     provider_b = args.provider_b or provider_a
     model_b = args.model_b
     is_dual = model_b is not None
+    if is_dual:
+        prof_b = resolve_model_profile(model_b, provider_hint=provider_b)
+        model_b = prof_b.hf_repo_or_id
+        provider_b = prof_b.provider if args.provider_b is None else provider_b
+
     base_url_a = args.base_url_a or args.base_url
     base_url_b = args.base_url_b or args.base_url
 
@@ -125,7 +148,7 @@ def main():
         run_name=args.run_name,
         tag=tag,
         is_dual=is_dual,
-        capture_stdout=True,
+        capture_stdout=(args.staged_mode != "stage1-extract-a"),
         metadata={
             "provider_a": provider_a,
             "model_a": model_a,
@@ -136,6 +159,7 @@ def main():
             "compare_source": args.compare_source,
             "audit_ground_truth": args.audit_ground_truth,
             "max_rounds": args.max_rounds,
+            "staged_mode": args.staged_mode,
         },
     )
 
@@ -157,6 +181,40 @@ def main():
                         target_model_ids.append(m.id)
                         if len(target_model_ids) >= args.count:
                             break
+
+        stage_cache_dir = Path(args.stage_cache_dir or f"logs/stage_cache/{tag}")
+
+        # Staged Sequential Dual Mode - Stage 1 (Agent A extraction only)
+        if args.staged_mode == "stage1-extract-a":
+            stage_cache_dir.mkdir(parents=True, exist_ok=True)
+            print("\n" + "=" * 80)
+            print("🚀 STAGED DUAL-AGENT BENCHMARK — STAGE 1 (AGENT A ONLY)")
+            print(f"Agent A:         {provider_a} ({model_a})")
+            print(f"Papers to Run:   {len(target_model_ids)}")
+            print(f"Target Models:   {', '.join(target_model_ids)}")
+            print(f"Stage Cache Dir: {stage_cache_dir}")
+            print("=" * 80)
+
+            from agent_gmmis.extraction.pdf_parser import PDFParser
+            client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, base_url=base_url_a))
+            agent_a = ExtractionAgent(llm_client=client_a)
+
+            for idx, model_id in enumerate(target_model_ids, 1):
+                print(f"\n[{idx}/{len(target_model_ids)}] 📄 Extracting Agent A for '{model_id}'...")
+                t_p0 = time.time()
+                pdf_path = fetcher.fetch_for_model(model_id)
+                manuscript = PDFParser.parse(pdf_path)
+                extracted_a = agent_a.process_manuscript(manuscript)
+                paper_stage_dir = stage_cache_dir / sanitize_filename(model_id)
+                paper_stage_dir.mkdir(parents=True, exist_ok=True)
+                with open(paper_stage_dir / "agent_a_extracted.json", "w", encoding="utf-8") as f:
+                    f.write(extracted_a.model_dump_json(indent=2))
+                print(f"   ✅ Saved Agent A extraction in {time.time() - t_p0:.1f}s -> {paper_stage_dir / 'agent_a_extracted.json'}")
+
+            print("\n" + "=" * 80)
+            print(f"🎉 Stage 1 completed successfully! Cached {len(target_model_ids)} papers to {stage_cache_dir}")
+            print("=" * 80)
+            return
 
         start_time_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print("\n" + "=" * 80)
@@ -195,11 +253,16 @@ def main():
 
         if is_dual:
             from agent_gmmis.extraction.dual_coordinator import DualExtractionCoordinator
-            client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, base_url=base_url_a))
-            agent_a = ExtractionAgent(llm_client=client_a)
-            client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, base_url=base_url_b))
-            agent_b = ExtractionAgent(llm_client=client_b)
-            coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
+            if args.staged_mode == "stage2-extract-b-and-reconcile":
+                client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, base_url=base_url_b))
+                agent_b = ExtractionAgent(llm_client=client_b)
+                coordinator = DualExtractionCoordinator(agent_a=None, agent_b=agent_b)
+            else:
+                client_a = LLMClient(config=LLMConfig(provider=provider_a, model=model_a, base_url=base_url_a))
+                agent_a = ExtractionAgent(llm_client=client_a)
+                client_b = LLMClient(config=LLMConfig(provider=provider_b, model=model_b, base_url=base_url_b))
+                agent_b = ExtractionAgent(llm_client=client_b)
+                coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
         else:
             config_kwargs = {}
             if provider_a:
@@ -224,7 +287,34 @@ def main():
 
                 deliberation_trajectory = []
                 if is_dual:
-                    if args.max_rounds > 1:
+                    if args.staged_mode == "stage2-extract-b-and-reconcile":
+                        cached_a_path = stage_cache_dir / sanitize_filename(model_id) / "agent_a_extracted.json"
+                        if not cached_a_path.exists():
+                            raise FileNotFoundError(f"Missing cached Agent A extraction: {cached_a_path}")
+                        with open(cached_a_path, "r", encoding="utf-8") as f:
+                            pre_extracted_a = ExtractedPaperData.model_validate_json(f.read())
+
+                        if args.max_rounds > 1:
+                            extracted_a, extracted_b, audit_report, deliberation_trajectory = coordinator.extract_manuscript_with_deliberation(
+                                manuscript=manuscript,
+                                auditor=auditor,
+                                max_rounds=args.max_rounds,
+                                benchmark_mode=args.audit_ground_truth,
+                                verbose=True,
+                                pre_extracted_a=pre_extracted_a,
+                                agent_a_online=False,
+                                agent_b_online=True,
+                            )
+                        else:
+                            extracted_a = pre_extracted_a
+                            extracted_b = agent_b.process_manuscript(manuscript)
+                            audit_report = auditor.audit_consensus(
+                                extracted_a,
+                                extracted_b,
+                                manuscript=manuscript,
+                                benchmark_mode=args.audit_ground_truth,
+                            )
+                    elif args.max_rounds > 1:
                         extracted_a, extracted_b, audit_report, deliberation_trajectory = coordinator.extract_manuscript_with_deliberation(
                             manuscript=manuscript,
                             auditor=auditor,

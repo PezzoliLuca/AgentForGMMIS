@@ -141,6 +141,22 @@ class ExtractedPaperData(BaseModel):
     )
     extraction_notes: Optional[str] = Field(None, description="Qualitative notes or ambiguities encountered")
 
+    @field_validator("thought_process", mode="before")
+    @classmethod
+    def normalize_thought_process(cls, v):
+        if v is None:
+            return None
+        if isinstance(v, ExtractionThoughtProcess):
+            return v
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, list):
+            joined = "\n".join(str(item) for item in v if item)
+            return ExtractionThoughtProcess(ambiguities_or_caveats=joined)
+        if isinstance(v, str):
+            return ExtractionThoughtProcess(ambiguities_or_caveats=v)
+        return None
+
     @field_validator("extracted_scores", mode="before")
     @classmethod
     def filter_malformed_scores(cls, v):

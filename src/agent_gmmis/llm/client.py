@@ -41,6 +41,11 @@ class LLMClient:
     def __init__(self, config: Optional[LLMConfig] = None):
         self.config = config or LLMConfig()
 
+        from agent_gmmis.llm.registry import resolve_model_profile
+        self.profile = resolve_model_profile(self.config.model, provider_hint=self.config.provider)
+        if self.config.provider != "mock" and self.profile.hf_repo_or_id:
+            self.config.model = self.profile.hf_repo_or_id
+
         if self.config.provider == "mock":
             self.is_mock = True
             self._gemini_client = None
@@ -198,10 +203,14 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         # Calculate realistic output token budget for structured JSON response:
-        # ExtractedPaperData needs at most ~2048 tokens (including thought_process and 30+ benchmark rows)
-        # Reinterrogation responses need at most ~800 tokens.
+        # ExtractedPaperData needs at most ~2048 tokens (4096 for reasoning models with <think> traces)
+        # Reinterrogation responses need at most ~800 tokens (1536 for reasoning models).
         resp_name = getattr(response_model, "__name__", "")
-        max_needed_output = 2048 if resp_name == "ExtractedPaperData" else 800
+        is_reasoning = bool(getattr(self, "profile", None) and self.profile.is_reasoning)
+        if is_reasoning:
+            max_needed_output = 4096 if resp_name == "ExtractedPaperData" else 1536
+        else:
+            max_needed_output = 2048 if resp_name == "ExtractedPaperData" else 800
 
         # Clean, inline and compact schema representation to preserve context tokens and eliminate $defs
         raw_schema = response_model.model_json_schema()
@@ -252,7 +261,7 @@ class LLMClient:
         safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 500))
 
         # Direct structured completion for vLLM / Ollama (avoids slow redundant beta.parse timeout)
-        use_beta_parse = self.config.provider not in ("mufasa", "ollama")
+        use_beta_parse = (not is_reasoning) and (self.config.provider not in ("mufasa", "ollama"))
 
         if use_beta_parse:
             try:
@@ -280,14 +289,17 @@ class LLMClient:
             f"4. Target JSON Schema:\n{schema_json}"
         )
 
+        call_kwargs = {
+            "model": self.config.model,
+            "messages": augmented_messages,
+            "temperature": self.config.temperature,
+            "max_tokens": safe_max_tokens,
+        }
+        if not is_reasoning:
+            call_kwargs["response_format"] = {"type": "json_object"}
+
         try:
-            response = self._openai_client.chat.completions.create(
-                model=self.config.model,
-                messages=augmented_messages,
-                response_format={"type": "json_object"},
-                temperature=self.config.temperature,
-                max_tokens=safe_max_tokens,
-            )
+            response = self._openai_client.chat.completions.create(**call_kwargs)
         except Exception as exc:
             # Automatic recovery: if vLLM throws 400 context limit error, trim manuscript and retry
             err_str = str(exc)
@@ -312,13 +324,15 @@ class LLMClient:
                             + user_content[mid + half_trim :]
                         )
                     retry_tokens = min(max_needed_output, 1500)
-                    response = self._openai_client.chat.completions.create(
-                        model=self.config.model,
-                        messages=augmented_messages,
-                        response_format={"type": "json_object"},
-                        temperature=self.config.temperature,
-                        max_tokens=retry_tokens,
-                    )
+                    retry_kwargs = {
+                        "model": self.config.model,
+                        "messages": augmented_messages,
+                        "temperature": self.config.temperature,
+                        "max_tokens": retry_tokens,
+                    }
+                    if not is_reasoning:
+                        retry_kwargs["response_format"] = {"type": "json_object"}
+                    response = self._openai_client.chat.completions.create(**retry_kwargs)
                 else:
                     raise exc
             else:
