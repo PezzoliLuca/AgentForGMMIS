@@ -356,10 +356,14 @@ with tab_launch:
     with col_btn_launch:
         if st.button("🚀 Launch Benchmark Job", type="primary", use_container_width=True):
             if exec_env == "Mufasa HPC (SLURM)":
-                if not m_status.get("online"):
-                    st.error("Cannot launch on Mufasa: Host is unreachable.")
+                with st.spinner("Connecting to Mufasa HPC..."):
+                    current_status = cm.check_mufasa_status()
+                    st.session_state["mufasa_status"] = current_status
+
+                if not current_status.get("online"):
+                    st.error(f"Cannot launch on Mufasa: Host is unreachable.\n\nDetails: {current_status.get('error')}")
                 else:
-                    with st.spinner("Submitting SLURM job to Mufasa..."):
+                    with st.spinner("Syncing code and submitting SLURM job to Mufasa..."):
                         cfg = {
                             "model_a": model_a_id,
                             "model_b": model_b_id or "",

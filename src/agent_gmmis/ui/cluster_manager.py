@@ -16,6 +16,10 @@ from typing import Any, Dict, List, Optional, Tuple
 class ClusterManager:
     """Manages SSH and SLURM interactions with the DEIB Mufasa A100 GPU cluster."""
 
+    ENV_PREFIX = (
+        'export PATH="/opt/shared/sw/amd/gcc-13.3.0/slurm-25.05.4/bin:$HOME/.local/bin:$PATH"; '
+    )
+
     def __init__(
         self,
         host: Optional[str] = None,
@@ -29,14 +33,14 @@ class ClusterManager:
         self.proj_root = Path(__file__).resolve().parent.parent.parent.parent
 
     def _run_ssh(self, cmd: str, timeout: int = 10) -> Tuple[int, str, str]:
-        """Executes a remote command via SSH."""
+        """Executes a remote command via SSH with standard SLURM environment."""
         full_ssh = [
             "ssh",
             "-o", "BatchMode=yes",
             "-o", f"ConnectTimeout={min(timeout, 5)}",
             "-o", "StrictHostKeyChecking=no",
             self.target,
-            cmd,
+            f"{self.ENV_PREFIX}{cmd}",
         ]
         try:
             res = subprocess.run(
@@ -55,11 +59,11 @@ class ClusterManager:
         """
         Pings Mufasa over SSH, retrieves active SLURM jobs, and discovers cached HF models.
         """
-        # Composite remote diagnostic command
+        # Composite remote diagnostic command with graceful fallbacks
         check_cmd = (
             "echo '===SECTION:PING===' && echo 'PONG' && "
-            "echo '===SECTION:SQUEUE===' && squeue -u $USER -o '%.18i %.9P %.20j %.8u %.2t %.10M %.6D %R' 2>/dev/null && "
-            "echo '===SECTION:HF_MODELS===' && ls -1 ~/.cache/huggingface/hub/ 2>/dev/null"
+            "echo '===SECTION:SQUEUE===' && (squeue -u $USER -o '%.18i %.9P %.20j %.8u %.2t %.10M %.6D %R' 2>/dev/null || true) && "
+            "echo '===SECTION:HF_MODELS===' && (ls -1 ~/.cache/huggingface/hub/ 2>/dev/null || true)"
         )
         code, stdout, stderr = self._run_ssh(check_cmd, timeout=8)
 
@@ -68,7 +72,7 @@ class ClusterManager:
                 "online": False,
                 "host": self.host,
                 "user": self.user,
-                "error": stderr.strip() or "Connection timed out or unreachable.",
+                "error": stderr.strip() or stdout.strip() or "Connection timed out or unreachable.",
                 "cached_models": [],
                 "active_jobs": [],
             }
