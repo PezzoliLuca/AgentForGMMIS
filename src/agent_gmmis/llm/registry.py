@@ -196,7 +196,9 @@ def resolve_model_profile(identifier: str, provider_hint: Optional[str] = None) 
     If the identifier is unknown, constructs a fallback ModelProfile using conservative
     defaults, respecting any provider hint or auto-detecting cloud/mock providers.
     """
-    raw = (identifier or "").strip()
+    raw = (identifier or "").strip().strip("'\"")
+    if provider_hint:
+        provider_hint = provider_hint.strip().strip("'\"")
     if not raw:
         return MODEL_CATALOG["gemini-3.5-flash-lite"]
 
@@ -500,11 +502,16 @@ def main() -> None:
             print(f"{key:<22} | {p.provider:<8} | {p.vram_gb:<5.1f}G | {p.default_max_len_single:<7} | {p.display_name}")
         return
 
+    clean_model_a = args.model_a.strip().strip("'\"") if args.model_a else "qwen2.5-7b-awq"
+    clean_model_b = args.model_b.strip().strip("'\"") if args.model_b else None
+    clean_provider_a = args.provider_a.strip().strip("'\"") if args.provider_a else None
+    clean_provider_b = args.provider_b.strip().strip("'\"") if args.provider_b else None
+
     plan = plan_mufasa_allocation(
-        model_a=args.model_a,
-        model_b=args.model_b,
-        provider_a=args.provider_a,
-        provider_b=args.provider_b,
+        model_a=clean_model_a,
+        model_b=clean_model_b,
+        provider_a=clean_provider_a,
+        provider_b=clean_provider_b,
     )
 
     if args.plan_bash:

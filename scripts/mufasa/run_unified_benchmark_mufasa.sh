@@ -66,18 +66,20 @@ else
     EXTRA_ARGS=("$@")
 fi
 
-PROVIDER_A=${PROVIDER_A:-""}
-PROVIDER_B=${PROVIDER_B:-""}
+MODEL_A=$(echo "$MODEL_A" | sed -e 's/^["'\'' ]*//' -e 's/["'\'' ]*$//')
+MODEL_B=$(echo "$MODEL_B" | sed -e 's/^["'\'' ]*//' -e 's/["'\'' ]*$//')
+PROVIDER_A=$(echo "${PROVIDER_A:-}" | sed -e 's/^["'\'' ]*//' -e 's/["'\'' ]*$//')
+PROVIDER_B=$(echo "${PROVIDER_B:-}" | sed -e 's/^["'\'' ]*//' -e 's/["'\'' ]*$//')
 COMPARE_SOURCE=${COMPARE_SOURCE:-"primary"}
 
 # 3. Dynamic Plan Resolution via ModelRegistry
-PLAN_CMD="python3 -m agent_gmmis.llm.registry --plan-bash --model-a \"$MODEL_A\""
-[ -n "$PROVIDER_A" ] && PLAN_CMD="$PLAN_CMD --provider-a \"$PROVIDER_A\""
-[ -n "$MODEL_B" ] && PLAN_CMD="$PLAN_CMD --model-b \"$MODEL_B\""
-[ -n "$PROVIDER_B" ] && PLAN_CMD="$PLAN_CMD --provider-b \"$PROVIDER_B\""
+PLAN_ARGS=(--plan-bash --model-a "$MODEL_A")
+[ -n "$PROVIDER_A" ] && PLAN_ARGS+=(--provider-a "$PROVIDER_A")
+[ -n "$MODEL_B" ] && PLAN_ARGS+=(--model-b "$MODEL_B")
+[ -n "$PROVIDER_B" ] && PLAN_ARGS+=(--provider-b "$PROVIDER_B")
 
-echo "📐 Querying Model Registry Plan: $PLAN_CMD"
-eval $($PLAN_CMD)
+echo "📐 Querying Model Registry Plan: python3 -m agent_gmmis.llm.registry ${PLAN_ARGS[*]}"
+eval "$(python3 -m agent_gmmis.llm.registry "${PLAN_ARGS[@]}")"
 
 # Check auto-installation of bitsandbytes if requested by any selected model
 if [ "$NEEDS_BITSANDBYTES" = "true" ] || [[ "$VLLM_ARGS_A $VLLM_ARGS_B" == *"bitsandbytes"* ]]; then
