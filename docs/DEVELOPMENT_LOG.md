@@ -1240,6 +1240,74 @@ Perform an end-to-end audit and hardening of the AgentForGMMIS codebase followin
 * **Full Test Suite**: All **113 unit and integration tests passing (100% success rate)** in `3.26s`.
 * **Zero Regressions**: Across `test_auditor.py` (15/15), `test_consensus_auditing.py` (27/27), `test_database_agent.py` (16/16), `test_db_layer.py` (9/9), `test_evaluator.py` (5/5), `test_extraction.py` (16/16), `test_outreach.py` (8/8), `test_repo_inspector.py` (10/10), `test_run_logger.py` (7/7).
 
+---
+
+## Session 2026-11-03: Step 4 — Autonomous Literature ScoutAgent (`src/agent_gmmis/scouting/`) & Standalone Validation Suite
+
+### 1. Objective & Scope
+Design, implement, and empirically validate in standalone mode the **`ScoutAgent`** (Step 4), responsible for continuous literature discovery, cross-source deduplication, preprint-to-journal lifecycle tracking, and abstract-level epistemic screening before dispatching PDFs to the extraction pipeline.
+
+### 2. Architectural Highlights (`src/agent_gmmis/scouting/`)
+1. **3-Pillar Hybrid PRISMA-Agentic Discovery (`harvesters.py`, `scout_agent.py`)**:
+   - **Pillar 1 (Systematic PRISMA Backbone)**: Deterministic boolean queries across `ArxivHarvester` (with native `submittedDate:[... TO ...]` filtering), `OpenAlexHarvester` (Polite Pool REST API), `EuropePMCHarvester` (PubMed/PMC), and `GoogleScholarHarvester` (equipped with local caching and an automatic anti-CAPTCHA circuit breaker).
+   - **Pillar 2 (Forward Citation Snowballing)**: `OpenAlexHarvester.harvest_citations()` discovers newly published works citing foundational 3D medical segmentation seeds (*MedSAM*, *SAM-Med3D*, *TotalSegmentator*, *VISTA3D*, *Moglia et al.*).
+   - **Pillar 3 (LLM Agentic Query Planner & Follow-the-Lead Explorer)**:
+     - `ScoutAgent.plan_agentic_queries()` dynamically formulates `ScoutQueryPlan` search strings based on recent models in `database.sqlite` and user research objectives.
+     - `ScoutAgent.follow_discovered_leads()` harvests unknown 3D models/benchmarks referenced inside screened abstracts (`discovered_external_leads`).
+2. **Stage 2 Deduplication, Pre-Ranking & Lifecycle Upgrade Tracking (`deduplicator.py`)**:
+   - Merges duplicate records across bibliographic sources while preserving the longest abstract, highest citation count, and peer-reviewed venue metadata.
+   - Detects **`LIFECYCLE_UPGRADE`** when an existing `arXiv` preprint in `database.sqlite` appears in a peer-reviewed journal/conference with a new DOI.
+   - Applies deterministic Zero-LLM lexical exclusions (filtering out pure surveys/reviews and 2D-only non-radiological microscopy/retinal/dermoscopic/endoscopic papers) and pre-ranks candidates (`compute_stage2_pre_rank`) before LLM triage.
+3. **Stage 3 Abstract-Level Triage with Three-State Epistemic Logic (`schemas.py`, `prompts.py`, `scout_agent.py`)**:
+   - Evaluates inclusion criteria using `TriStateCriterion` (`YES`, `IMPLICIT_UNKNOWN`, `NO`), preventing false-negative rejections when abstracts omit explicit metric names (`Dice`) or full dataset lists.
+   - Enforces a deterministic **Canonical 3D Benchmark Rescue Rule** via `DatasetAliasResolver`.
+   - Classifies promoted papers into **`TIER_1_GENERALIST`** (3D foundation, promptable SAM/SAM2, universal, vision-language/text-driven) vs **`TIER_2_BENCHMARK_SOTA`** (task-specific 3D volumetric architectures on public benchmarks).
+4. **Stage 4 Open-Access PDF Resolver**:
+   - Resolves direct PDF links from `arXiv`, `EuropePMC`, `OpenAlex`, or looks up open-access `arXiv` preprint twins for closed-access DOI articles.
+
+### 3. Standalone Validation & Test Suite
+* **Gold-Standard 40-Abstract Benchmark (`data/benchmarks/scout_abstract_benchmark.json` & `scripts/evaluate_scout.py`)**:
+  - 20 True Positives (12 `TIER_1_GENERALIST` + 8 `TIER_2_BENCHMARK_SOTA`) and 20 Hard Negatives (2D SAM traps, surveys, 3D synthesis/registration/report-gen traps, private-only cohorts).
+  - **Empirical Cross-Platform Validation (Gemini Cloud vs. Mufasa HPC Job 5831)**:
+    * **Google Gemini (`gemini-3.1-flash-lite`)**: **100.0% Recall (`20/20`)**, **100.0% Specificity (`20/20`)**, **100.0% F1-Score**, **95.0% (`19/20`) Tier 1 vs Tier 2 Accuracy** in `254.59s` (`6.36s/abstract`).
+    * **DEIB Mufasa (`Qwen/Qwen2.5-14B-Instruct-AWQ`, SLURM Job 5831)**: **100.0% Recall (`20/20`)**, **100.0% Specificity (`20/20`)**, **100.0% F1-Score**, and **100.0% (`20/20`) Tier 1 vs Tier 2 Accuracy** in **`219.92s` (`5.50s/abstract`)** with an 89.7% vLLM prefix cache hit rate.
+    * **Stage 2 Zero-LLM Lexical Pre-Filter**: Deterministically intercepted `15/20` (75.0%) of Hard Negatives before invoking the LLM.
+* **Real-World Stress Test on April–May 2025 Literature (`scripts/run_scout.py --since 2025-04-01 --until 2025-05-31 --ignore-db-after 2025-04-01`)**:
+  - Executed a live, unconstrained multi-source harvesting campaign (`arXiv`, `OpenAlex`, `EuropePMC`, `Google Scholar`, Citation Snowballing, Agentic Query Planner, and Follow-the-Lead Explorer) across April–May 2025, pretending the survey database was frozen on `2025-03-31` (`3` ground-truth survey models in window: `MedSAM2`, `CDPDNet`, `TAGS`).
+  - **Uncovered and Resolved 4 Real-World Edge Cases** (`scout_20261103_234516` Before $\rightarrow$ `scout_20261103_235319` After):
+    1. *Elsevier/Springer DOI False arXiv Regex*: Tightened `_extract_arxiv_id()` with negative lookbehind/lookahead (`(?<![0-9.])\b([0-9]{2}(?:0[1-9]|1[0-2])\.[0-9]{4,5}(?:v[0-9]+)?)\b(?![0-9])`) to stop Elsevier article numbers like `10.1016/j.bspc.2025.104340` from generating broken `https://arxiv.org/pdf/2025.10434.pdf` URLs.
+    2. *Google Scholar Year-Only Temporal Drift*: Added `_infer_date_from_arxiv_id()` and exact `YYYY-MM-DD` date checks so late-year preprints (`arXiv:2511.19046`, November 2025) cannot leak into an April–May 2025 campaign.
+    3. *Off-the-Shelf Baseline Clinical Applications & Benchmarking Odysseys*: Added Stage 2 lexical filters for pure comparative benchmarking studies (`"benchmarking odyssey"`, `"can foundation models really segment"`) and a Stage 3 deterministic guard rejecting off-the-shelf baseline clinical applications (`nnU-Net`, `SAM 2`, `MedSAM`, `TotalSegmentator`).
+    4. *Implicit-Modality Abstract in `CDPDNet` (`arXiv:2505.18958`)*: Enhanced `compute_stage2_pre_rank()` to reward `<ModelAcronym>:` title patterns and generalist architectural cues (`"text guidance"`, `"hybrid vision encoder"`), elevating `CDPDNet` into the Stage 3 evaluation top-K even though its real arXiv abstract never mentions `"3D"`, `"CT"`, `"MRI"`, or `"Dice"`.
+  - **Post-Fix Empirical Outcome (`logs/scout_runs/scout_20261103_235319/scout_report.md` & `logs/scout_runs/scout_20261104_001220/scout_cot_trace.md`)**: **100% Window Recall (`3/3` survey models rediscovered: `MedSAM2`, `CDPDNet`, `TAGS`)**, plus autonomous discovery of novel April–May 2025 3D generalist/foundation models (`Memorizing SAM`, `RadSAM`, `Swin-BOB / UKBOB`, `SAMba-UNet`), and **0 false-positive baseline clinical papers or broken Elsevier PDF links**.
+* **Structured Chain-of-Thought Trace Logging & 3-Stage Defense-in-Depth Verification (`scripts/test_scout_extractor_filter_chain.py`)**:
+  - Extended `ScoutScreeningResult` with a mandatory 3-step `ScoutThoughtProcess` (`task_and_novelty_analysis`, `dimensionality_and_modality_analysis`, `benchmark_and_paradigm_analysis`) and automated `scout_cot_trace.md` generation in `ScoutAgent.save_report()`.
+  - Verified the 3-Stage PRISMA Defense-in-Depth Funnel (`ScoutAgent` $\rightarrow$ `ExtractionAgent` $\rightarrow$ `AuditorAgent`) across 4 end-to-end scenarios (`logs/scout_runs/defense_in_depth_chain_trace.md`): 100% (`4/4`) accuracy where the real `MedSAM2` 9MB PDF is promoted and accepted while all 3 "stealth traps" (ambiguous abstracts with `IMPLICIT_UNKNOWN` criteria whose full text reveals private-only cohorts, 2D retinal/dermoscopy data, or off-the-shelf `nnU-Net` with HD95-only metrics) are caught and blocked (`AuditStatus.REJECTED`) at the full-text extraction/auditing stage.
+* **Full Test Suite**: **140/140 tests passing (100% green)**.
+
+---
+
+## Session 2026-11-13: Mufasa 40 GB A100 GPU Migration (`amoglia@10.79.23.96:~/lpezzoli/AgentForGMMIS`) & Context/Allocation Upgrade
+
+### 1. Objective & Scope
+Following the advisor meeting with Prof. Andrea Moglia, migrate the Mufasa HPC execution environment from the 20 GB student MIG slice (`lpezzoli@10.79.23.96`, `--qos=gpu --gres=gpu:3g.20gb:1`) to the advisor's 40 GB A100 GPU profile (`amoglia@10.79.23.96`, `--qos=gpuheavy-40 --gres=gpu:40gb:1`), ensuring complete isolation inside `/home/amoglia/lpezzoli/` to avoid conflicts or disk quota exhaustion alongside fellow researchers (Riccardo and Tommaso).
+
+### 2. Infrastructure & Code Enhancements
+1. **Isolated Workspace & Zero-Copy NFS Quota Sharing (`/home/amoglia/lpezzoli/AgentForGMMIS`)**:
+   - Discovered that `/home/amoglia` had 176 GB used out of its 200 GB NFS quota (leaving ~24 GB free), whereas `/home/lpezzoli` already hosted 118 GB of Hugging Face model weights and an 8.1 GB `venv` (with 74 GB free).
+   - Configured execute-only traversal (`chmod o+x`) on `/home/lpezzoli` and linked `/home/amoglia/lpezzoli/.cache/huggingface`, `venv`, and `.local` via symlinks. The physical application (`src/`, `scripts/`, `data/`, `.env`, `logs/`) resides in `/home/amoglia/lpezzoli/AgentForGMMIS` (~1.1 GB footprint), providing immediate zero-copy access to all 14 cached models without consuming `amoglia`'s disk quota.
+2. **SLURM `gpuheavy-40` & Dynamic Clean-GPU Auto-Selector (`scripts/mufasa/*.sh`)**:
+   - Upgraded all SLURM batch scripts to `#SBATCH --qos=gpuheavy-40`, `#SBATCH --gres=gpu:40gb:1`, `--cpus-per-task=8`, `--mem=64G`, and prefixed all job names with `lpezzoli_` (`lpezzoli_gmmis`, `lpezzoli_scout`, `lpezzoli_vllm`).
+   - Added an automatic `nvidia-smi` free-VRAM selector (`CUDA_DEVICE_ORDER=PCI_BUS_ID` + `CUDA_VISIBLE_DEVICES`) so jobs always bind to a physical A100-40GB card with full 40 GB free VRAM on node `gn01`.
+   - Empirically verified via `srun` (Job 6191 on `gn01`: `NVIDIA A100-SXM4-40GB`, `42.41 GB` VRAM detected by PyTorch/vLLM `0.30.0`).
+3. **40 GB VRAM Planner, 32B Model Catalog & Expanded Context Window (`registry.py`, `extractor.py`, `client.py`, `cluster_manager.py`, `dashboard.py`)**:
+   - Raised `dual_simultaneous` combined weight threshold in `plan_mufasa_allocation()` from `12.5 GB` to `26.0 GB`, enabling simultaneous single-GPU co-location of 14B–22B model pairs (e.g., `Qwen-2.5-14B-AWQ + DeepSeek-R1-14B-AWQ` or `Codestral-22B-AWQ + Qwen-14B-AWQ`).
+   - Registered `qwen2.5-32b-awq` (`Qwen/Qwen2.5-32B-Instruct-AWQ`) and `deepseek-r1-32b-awq` (`casperhansen/deepseek-r1-distill-qwen-32b-awq`) in `MODEL_CATALOG` and `download_open_models.sh`.
+   - Upgraded `ExtractionAgent.get_default_context_chars()` for Mufasa from `16000` (20 GB era) to `35000` chars (~10k tokens, 7–9 dense result pages) and aligned `LLMClient` context limit with `default_max_len_dual` / `MUFASA_MAX_MODEL_LEN` (`24576`–`32768` tokens).
+   - Updated `ClusterManager`, `dashboard.py`, `sync_mufasa_logs.sh`, and `monitor_and_sync_mufasa.sh` to target `amoglia@10.79.23.96:~/lpezzoli/AgentForGMMIS` by default and forward extra CLI flags (`--audit-ground-truth`, `--apply-curation`, `--models`) from the Streamlit UI.
+
+
+
 
 
 

@@ -262,17 +262,20 @@ flowchart TD
 ### Remote HPC Cluster ("Mufasa" @ DEIB Polimi)
 * **Access**: SSH via DEIB Polimi VPN (`gp-deib-saml.vpn.polimi.it`):
   ```bash
-  ssh lpezzoli@10.79.23.96
+  ssh amoglia@10.79.23.96
+  cd ~/lpezzoli/AgentForGMMIS
   ```
+  *(Isolated workspace inside `~/lpezzoli/AgentForGMMIS` on the advisor's profile `amoglia`, sharing cached Hugging Face weights and virtualenv from `/home/lpezzoli` via symlinks to avoid NFS quota contention).*
 * **Environment**:
-  * Node: Multi-GPU compute cluster managed via SLURM.
-  * Python: 3.12 (virtualenv at `~/AgentForGMMIS/venv`).
-  * PyTorch: 2.6.0+cu124 (CUDA 12.4 supported by host 580.95 drivers).
+  * Node: Multi-GPU compute cluster (`gn01`) managed via SLURM.
+  * Python: 3.12 (virtualenv at `~/lpezzoli/AgentForGMMIS/venv`).
+  * PyTorch / vLLM: PyTorch 2.6.0+cu124, vLLM 0.30.0 (CUDA 12.4 supported by host 580.95 drivers).
 * **Job Execution Policy**:
-  * Batch Jobs: `sbatch run_job.sh` (SLURM QoS: `gpu`, GPU allocation: `3g.20gb:1`, 4 CPUs, 32GB RAM).
-  * Interactive Debugging:
+  * Batch Jobs (40 GB A100 GPU): `sbatch scripts/mufasa/run_unified_benchmark_mufasa.sh` (SLURM QoS: `gpuheavy-40`, GPU allocation: `gpu:40gb:1`, 8 CPUs, 64GB RAM; job names prefixed with `lpezzoli_`).
+  * Legacy Student Profile (20 GB MIG): `lpezzoli@10.79.23.96` (`--qos=gpu --gres=gpu:3g.20gb:1`).
+  * Interactive Debugging (40 GB A100):
     ```bash
-    srun --qos=gpu --gres=gpu:3g.20gb:1 --cpus-per-task=4 --mem=32G --pty /bin/bash
+    srun --job-name=lpezzoli_debug --qos=gpuheavy-40 --gres=gpu:40gb:1 --cpus-per-task=8 --mem=64G --pty /bin/bash
     ```
 
 ---

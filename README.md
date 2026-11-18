@@ -8,102 +8,104 @@ Master's Thesis Project - Pezzoli Luca - luca2.pezzoli@mail.polimi.it
 
 ---
 
-## 1. Mufasa Environment Setup (One-time)
+## 1. Mufasa Environment Setup (40 GB A100 Profile)
 
 ### SSH Access
 Requires an active DEIB Polimi VPN connection (`gp-deib-saml.vpn.polimi.it`):
 ```bash
-ssh lpezzoli@10.79.23.96
+ssh amoglia@10.79.23.96
+cd ~/lpezzoli/AgentForGMMIS
 ```
+*(Isolated inside `~/lpezzoli/` on the advisor's account to prevent conflicts with other researchers, with symlinked Hugging Face model cache `~/lpezzoli/.cache/huggingface -> /home/lpezzoli/.cache/huggingface` and virtualenv `~/lpezzoli/AgentForGMMIS/venv -> /home/lpezzoli/AgentForGMMIS/venv` to preserve NFS quota).*
 
 ### Python Virtual Environment
-The environment resides inside the repository at `~/AgentForGMMIS/venv`:
+The environment is accessible at `~/lpezzoli/AgentForGMMIS/venv`:
 * **Python:** 3.12 (without system `ensurepip`)
-* **PyTorch:** 2.6.0+cu124 (CUDA 12.4 supported by host 580.95 drivers / CUDA 13.0)
+* **PyTorch / vLLM:** PyTorch 2.6.0+cu124 & vLLM 0.30.0 (NVIDIA A100-SXM4-40GB / A100-PCIE-40GB)
 * **Manual activation:**
   ```bash
-  source ~/AgentForGMMIS/venv/bin/activate
+  source ~/lpezzoli/AgentForGMMIS/venv/bin/activate
+  export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
   ```
 
 ---
 
 ## 2. Common Commands Cheat Sheet
 
-### Code Synchronization (Git)
+### Code & Log Synchronization (Mac <-> Mufasa)
 
 ```bash
-# On Mac (after editing code)
-git add .
-git commit -m "..."
-git push origin main
+# Launch interactive Streamlit Dashboard (includes 1-click Code Push, Job Launch & Log Sync)
+./scripts/run_dashboard.sh
 
-# On Mufasa (pulling latest changes before running)
-cd ~/AgentForGMMIS
-git pull
+# Sync completed benchmark runs from Mufasa to local logs/mufasa_runs/
+./scripts/sync_mufasa_logs.sh
+
+# Monitor live SLURM job and auto-sync upon completion
+./scripts/monitor_and_sync_mufasa.sh
 ```
 
-### SLURM Job Management
+### SLURM Job Management (40 GB A100 — `gpuheavy-40`)
 
 ```bash
-# Submit batch job to the queue
-sbatch run_job.sh
+# Submit unified benchmark job (Single, Hybrid, or Dual-Local Simultaneous)
+sbatch --export=ALL,MODEL_A=qwen2.5-14b-awq,MODEL_B=deepseek-r1-14b-awq,COUNT=40 scripts/mufasa/run_unified_benchmark_mufasa.sh
 
-# Monitor job status (PD = Pending, R = Running)
-squeue -u lpezzoli
+# Monitor job status (all our jobs are prefixed with lpezzoli_)
+squeue -u amoglia
 
 # Follow output logs in real time
-tail -f logs/gmmis_job_<JOBID>.out
-
-# Inspect runtime errors
-cat logs/gmmis_job_<JOBID>.err
+tail -f logs/mufasa_unified_<JOBID>.out
 
 # Cancel a running or pending job
 scancel <JOBID>
 ```
 
-### Interactive GPU Session (Debug & Prototyping)
+### Interactive 40 GB GPU Session (Debug & Prototyping)
 
-To open an interactive shell directly on a compute node with an allocated GPU:
+To open an interactive shell directly on a compute node with an allocated 40 GB A100 GPU:
 ```bash
-srun --qos=gpu --gres=gpu:3g.20gb:1 --cpus-per-task=4 --mem=32G --pty /bin/bash
+srun --job-name=lpezzoli_debug --qos=gpuheavy-40 --gres=gpu:40gb:1 --cpus-per-task=8 --mem=64G --pty /bin/bash
 ```
 
-## 3. Mufasa Open-Source LLM Execution (vLLM)
+## 3. Mufasa Open-Source LLM Execution (vLLM on 40 GB A100)
 
-Mufasa provides dedicated GPU nodes (`--gres=gpu:3g.20gb:1` MIG slices or full A100s). For autonomous table extraction and JSON verification, the system supports self-hosted open-source models served via high-throughput **vLLM** with OpenAI API compatibility.
+Mufasa provides dedicated 40 GB A100 GPUs via `--qos=gpuheavy-40 --gres=gpu:40gb:1` (alongside 20 GB MIG slices on `--qos=gpu --gres=gpu:3g.20gb:1`). With 40 GB VRAM, the system supports both **Single/Hybrid 32B AWQ models** and **Simultaneous Dual-Local execution of two 14B–22B models (`combined_vram <= 26.0 GB`)** on a single GPU.
 
-### Recommended Models for Mufasa (20 GB VRAM Allocation)
+### Supported Models in `ModelRegistry` (40 GB VRAM Allocation)
 
 | Model | Format | VRAM Footprint | Max Context | Best For |
 | :--- | :--- | :--- | :--- | :--- |
-| **`Qwen/Qwen2.5-14B-Instruct-AWQ`** *(Recommended)* | 4-bit AWQ | ~9 GB | 32k - 64k tokens | State-of-the-art structured JSON & table extraction, leaves 11 GB for KV cache |
-| **`mistralai/Mistral-7B-Instruct-v0.3`** | float16 / 4-bit | ~5 - 14 GB | 32k tokens | European sovereign open model (Mistral AI, France). High speed, solid JSON mode |
-| **`TechxGenus/Codestral-22B-v0.1-AWQ`** | 4-bit AWQ | ~13 GB | 16k - 32k tokens | European code & structured data specialist (22B). Superior LaTeX table parsing |
-| **`Qwen/Qwen2.5-7B-Instruct`** | float16 / 4-bit | ~5 - 14 GB | 32k - 128k tokens | Ultra-fast inference, low resource consumption |
-| **`meta-llama/Llama-3.1-8B-Instruct`** | float16 / 4-bit | ~8 - 16 GB | 128k tokens | General reasoning and robust prompt alignment |
+| **`Qwen/Qwen2.5-32B-Instruct-AWQ`** | 4-bit AWQ | ~19.5 GB | 32k tokens | Flagship 32B dense extraction on 40 GB A100 |
+| **`casperhansen/deepseek-r1-distill-qwen-32b-awq`** | 4-bit AWQ | ~19.5 GB | 32k tokens | Flagship 32B reasoning (`<think>`) model on 40 GB A100 |
+| **`TechxGenus/Codestral-22B-v0.1-AWQ`** | 4-bit AWQ | ~12.5 GB | 24k - 32k tokens | European structured data specialist (22B); co-locates with 14B models on 40 GB |
+| **`Qwen/Qwen2.5-14B-Instruct-AWQ`** *(Recommended)* | 4-bit AWQ | ~10.5 GB | 24k - 32k tokens | State-of-the-art structured JSON & table extraction; co-locates in Dual-Local on 40 GB |
+| **`casperhansen/deepseek-r1-distill-qwen-14b-awq`** | 4-bit AWQ | ~9.5 GB | 24k - 32k tokens | Reasoning model with `<think>` traces; co-locates with Qwen-14B/Codestral-22B on 40 GB |
+| **`solidrust/Mistral-7B-Instruct-v0.3-AWQ`** | 4-bit AWQ | ~4.2 GB | 32k tokens | Ultra-fast European sovereign model |
+| **`Qwen/Qwen2.5-7B-Instruct-AWQ`** | 4-bit AWQ | ~5.7 GB | 32k tokens | High-speed local consensus worker |
+| **`hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4`** | 4-bit AWQ | ~5.5 GB | 32k tokens | US open-weights baseline |
 
 ---
 
 ### Step-by-Step Workflow on Mufasa
 
 #### 1. Download Model Weights
-Run on Mufasa (login node or interactive session):
+Run on Mufasa (saves into shared cache `~/lpezzoli/.cache/huggingface/hub/`):
 ```bash
-ssh lpezzoli@10.79.23.96
-cd ~/AgentForGMMIS
-git pull
-bash scripts/mufasa/download_model.sh Qwen/Qwen2.5-14B-Instruct-AWQ
+ssh amoglia@10.79.23.96
+cd ~/lpezzoli/AgentForGMMIS
+bash scripts/mufasa/download_open_models.sh qwen32b
 ```
 
-#### 2. Run Autonomous All-in-One Benchmark via SLURM
-Submits an autonomous job that allocates the GPU, launches vLLM in the background, waits for health check, runs the 15-paper benchmark, and cleans up:
+#### 2. Run Autonomous Unified Benchmark via SLURM
+Submits an autonomous job that selects the cleanest 40 GB A100 GPU, launches vLLM server(s), runs the benchmark, and cleans up:
 ```bash
-sbatch scripts/mufasa/run_benchmark_mufasa.sh Qwen/Qwen2.5-14B-Instruct-AWQ 15
+sbatch --export=ALL,MODEL_A=qwen2.5-14b-awq,MODEL_B=deepseek-r1-14b-awq,COUNT=40 scripts/mufasa/run_unified_benchmark_mufasa.sh
 ```
 Monitor progress:
 ```bash
-squeue -u lpezzoli
-tail -f logs/mufasa_bench_<JOBID>.out
+squeue -u amoglia
+tail -f logs/mufasa_unified_<JOBID>.out
 ```
 
 #### 3. Alternative: Running Interactively or via Mac Tunnel

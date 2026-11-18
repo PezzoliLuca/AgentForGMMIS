@@ -2,8 +2,8 @@
 
 > **Document Purpose**: Executive summary and actionable roadmap for resuming development in future sessions without needing to re-read prior conversational histories.  
 > **Repository**: `PezzoliLuca/AgentForGMMIS`  
-> **Last Updated**: `2026-10-29`  
-> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (AuditorAgent / 'Il Vigile')**, **Phase 3.1.5 (Dual-Agent Consensus & Epistemic Arbitration Engine Refinement)**, **Phase 3.2 Parts 1 & 2 (`RepoInspector` & `OutreachAgent`)**, **Phase 3.3 (`DatabaseAgent` / Curator Engine)**, and **Full Senior Codebase Audit & Hardening (P0-P3 + Post-Audit Surgical Fixes)** Completed & Empirically Validated (113/113 tests passing). Current Priority: **Comparative Dual-Agent Rerun Campaign across 40-paper literature cohort on DEIB Mufasa HPC (evaluating post-audit extraction stability & recall improvements)**.
+> **Last Updated**: `2026-11-13`  
+> **Status**: Steps 1, 2, 2.5, **Phase 3.1 (`AuditorAgent`)**, **Phase 3.1.5 (`DualExtractionCoordinator`)**, **Phase 3.2 (`RepoInspector` & `OutreachAgent`)**, **Phase 3.3 (`DatabaseAgent`)**, **Full Senior Codebase Audit & Hardening (P0-P3)**, **Step 4 (`ScoutAgent` Standalone Funnel & 40-Abstract Gold Benchmark)**, and **Mufasa 40 GB A100 HPC Migration (`amoglia@10.79.23.96:~/lpezzoli/AgentForGMMIS`)** Completed & Empirically Validated (140/140 tests passing). Current Priority: **40 GB A100 Dual-Local & 32B Model Benchmarking, End-to-End Scout-to-Extractor Orchestrator Integration, and Step 5 (`ConsultantAgent`)**.
 
 ---
 
@@ -193,9 +193,18 @@ With `ExtractionAgent`, `AuditorAgent`, `RepoInspector`, `OutreachAgent`, and `D
      4. *Hybrid Europe Pro (Job 5511)*: `Codestral-22B-AWQ` + `Gemini Flash` (143.3 min, **0.71% median MAE**, 26 verified, 17 disputes)
      5. *Hybrid Europe Light (Job 5516)*: `Mistral-7B` + `Gemini Flash` (47.3 min, 35.87% recall, **11 disputes — lowest ever**)
    * Key Discovery: Co-locating European open-weights (`Mistral-7B-AWQ`, 3.88 GB) with Chinese open-weights (`Qwen-7B-AWQ`, 5.19 GB) on a single 20 GB GPU slice cuts deliberation disputes by **33%**, eliminates **60%** of unconfirmed noise compared to Llama 8B, and accelerates runtime to under 60 seconds per paper. Detailed analysis in [`docs/THESIS_DESIGN_LOG.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/docs/THESIS_DESIGN_LOG.md) Section 33.
-3. **Phase 4 (`ScoutAgent`)**:
-   * Continuous discovery of newly published medical segmentation preprints via arXiv and PubMed APIs.
-   * Automatic paper fetching and execution of the full multi-agent pipeline.
+3. **Step 4 (`ScoutAgent` — Autonomous Literature Discovery & Triage)** (`src/agent_gmmis/scouting/`) — **COMPLETED & VALIDATED (STANDALONE)**:
+   * **Hybrid PRISMA-Agentic Discovery**: Combines deterministic PRISMA boolean queries (`arXiv`, `OpenAlex`, `EuropePMC/PubMed`, `Google Scholar` with anti-CAPTCHA circuit breaker), **Forward Citation Snowballing** on foundational seed papers, and **LLM Agentic Query Planning (`ScoutQueryPlan`) + Follow-the-Lead Exploration (`discovered_external_leads`)**.
+   * **4-Stage Filtering Funnel**:
+     1. *Stage 1*: Multi-source harvesting with persistent local disk cache (`data/cache_scout/`).
+     2. *Stage 2*: Cross-source deduplication, SQLite entity resolution (`ALREADY_IN_DB`), Preprint $\rightarrow$ Journal lifecycle tracking (`LIFECYCLE_UPGRADE`), and deterministic lexical pre-filtering (excluding surveys and 2D-only non-radiological microscopy/optics at zero LLM cost).
+     3. *Stage 3*: Abstract-level LLM triage using **Three-State Epistemic Logic (`YES`, `IMPLICIT_UNKNOWN`, `NO`)**, canonical 3D dataset rescue via `DatasetAliasResolver`, and dual-track taxonomic classification (`TIER_1_GENERALIST` vs `TIER_2_BENCHMARK_SOTA`).
+     4. *Stage 4*: Open-Access PDF resolution (`arXiv`, `PMC`, or preprint twin lookup) and structured report generation (`scout_report.md` & `scout_report.json`).
+   * **Standalone Calibration & Evaluation Suite**:
+     * 40-Abstract Gold Standard Benchmark (`data/benchmarks/scout_abstract_benchmark.json`: 20 True Positives + 20 Hard Negatives) evaluated via [`scripts/evaluate_scout.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/evaluate_scout.py).
+     * Retrospective Time-Machine Backtest (`--backtest-2025`) & Post-Survey Discovery CLI ([`scripts/run_scout.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/scripts/run_scout.py)).
+     * Detailed architectural documentation in [`docs/SCOUT_AGENT_DESIGN.md`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/docs/SCOUT_AGENT_DESIGN.md).
+     * 7 dedicated unit/integration tests in [`tests/test_scout_agent.py`](file:///Users/pezzoli/PoliMi/Thesis/AgentForGMMIS/tests/test_scout_agent.py) (139/139 total suite passing).
 
 ---
 
