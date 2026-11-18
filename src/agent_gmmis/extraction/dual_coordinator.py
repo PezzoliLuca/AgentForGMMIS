@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import concurrent.futures
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple, Union
 
 if TYPE_CHECKING:
     from agent_gmmis.auditing.auditor import AuditorAgent
     from agent_gmmis.auditing.schemas import ConsensusAuditReport
 
-from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver
+from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver, OrganAliasResolver
 from agent_gmmis.extraction.extractor import ExtractionAgent
 from agent_gmmis.extraction.pdf_parser import ParsedManuscript, PDFParser
 from agent_gmmis.extraction.schemas import (
@@ -28,12 +28,15 @@ def _find_matching_score_index(
     alias_resolver: Optional[DatasetAliasResolver] = None,
 ) -> Optional[int]:
     """Finds the index of the RawExtractedScore corresponding to dataset_name, organ_or_task, prompt_type and budget."""
+    from agent_gmmis.auditing.auditor import AuditorAgent
+
     norm_ds = (dataset_name or "").lower().strip()
     resolved_target = alias_resolver.resolve(dataset_name) if (alias_resolver and dataset_name) else None
     canon_target = (resolved_target or dataset_name or "").lower().strip()
-    norm_organ = (organ_or_task or "").lower().strip()
+    canon_organ = OrganAliasResolver.resolve(organ_or_task).lower()
+    target_is_ds_level = OrganAliasResolver.is_dataset_level(organ_or_task)
     norm_prompt = (prompt_type or "").lower().strip()
-    norm_budget = (data_budget_or_setting or "").lower().strip()
+    canon_budget = AuditorAgent.normalize_data_budget(data_budget_or_setting)
 
     best_idx = None
     best_score = -1
@@ -50,19 +53,19 @@ def _find_matching_score_index(
             continue
 
         pts = 1
-        s_organ = (s.organ_or_task or "").lower().strip()
-        if s_organ == norm_organ:
+        s_canon_organ = OrganAliasResolver.resolve(s.organ_or_task).lower()
+        s_is_ds_level = OrganAliasResolver.is_dataset_level(s.organ_or_task)
+        if s_canon_organ == canon_organ:
             pts += 3
-        elif not norm_organ or not s_organ:
-            pts += 1
+        elif s_is_ds_level != target_is_ds_level:
+            pts -= 1
 
-        # Budget match (e.g. "10% labeled" vs "100% labeled")
-        s_budget = (s.data_budget_or_setting or "").lower().strip()
-        if norm_budget and s_budget:
-            if s_budget == norm_budget:
-                pts += 2
-            else:
-                pts -= 1
+        # Canonical budget match (100%/None treated identically; e.g. "25% labeled" -> "25%")
+        s_canon_budget = AuditorAgent.normalize_data_budget(s.data_budget_or_setting)
+        if s_canon_budget == canon_budget:
+            pts += 2
+        elif (s_canon_budget or canon_budget) and s_canon_budget != canon_budget:
+            pts -= 2
 
         # Prompt type match (e.g. "1 point" vs "bounding box")
         s_prompt = (s.prompt_type or "").lower().strip()
@@ -268,9 +271,9 @@ class DualExtractionCoordinator:
             queries_to_run: List[Tuple[str, str, Any]] = []
             seen_queries: Set[Tuple[str, str]] = set()
 
-            OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}
-
-            # Identify Granularity Mismatches (single organs vs macro-average)
+            # Identify Inverted Granularity Mismatches:
+            # When one agent extracted per-organ breakdown(s) on a dataset while the peer ONLY extracted
+            # an aggregated Dataset-Level mean, blindly ask the coarse agent for the per-organ breakdown.
             all_canon_ds: Set[str] = set()
             for s in (extracted_a.extracted_scores + extracted_b.extracted_scores):
                 if not s.is_baseline_comparison and s.dataset_name:
@@ -290,23 +293,29 @@ class DualExtractionCoordinator:
                     and (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
                 ]
 
-                has_overall_a = any((s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS for s in scores_a_d)
-                has_overall_b = any((s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS for s in scores_b_d)
+                specific_organs_a = sorted({
+                    OrganAliasResolver.resolve(s.organ_or_task)
+                    for s in scores_a_d
+                    if not OrganAliasResolver.is_dataset_level(s.organ_or_task)
+                })
+                specific_organs_b = sorted({
+                    OrganAliasResolver.resolve(s.organ_or_task)
+                    for s in scores_b_d
+                    if not OrganAliasResolver.is_dataset_level(s.organ_or_task)
+                })
                 ds_name_display = scores_a_d[0].dataset_name if scores_a_d else (scores_b_d[0].dataset_name if scores_b_d else c_ds)
 
-                # If Agent A has multi-organ breakdown (>=2 scores) but lacks Overall score
-                if agent_a_online and self.agent_a is not None and len(scores_a_d) >= 2 and not has_overall_a:
-                    if ("granularity_a", c_ds) not in seen_queries:
-                        organs_a = [s.organ_or_task for s in scores_a_d if s.organ_or_task]
-                        queries_to_run.append(("granularity_a", c_ds, (ds_name_display, organs_a)))
-                        seen_queries.add(("granularity_a", c_ds))
+                # Agent A extracted only Dataset-Level, while Agent B has specific organ breakdowns -> query Agent A
+                if agent_a_online and self.agent_a is not None and scores_a_d and not specific_organs_a and len(specific_organs_b) >= 1:
+                    if ("organ_breakdown_a", c_ds) not in seen_queries:
+                        queries_to_run.append(("organ_breakdown_a", c_ds, (ds_name_display, specific_organs_b)))
+                        seen_queries.add(("organ_breakdown_a", c_ds))
 
-                # If Agent B has multi-organ breakdown (>=2 scores) but lacks Overall score
-                if agent_b_online and self.agent_b is not None and len(scores_b_d) >= 2 and not has_overall_b:
-                    if ("granularity_b", c_ds) not in seen_queries:
-                        organs_b = [s.organ_or_task for s in scores_b_d if s.organ_or_task]
-                        queries_to_run.append(("granularity_b", c_ds, (ds_name_display, organs_b)))
-                        seen_queries.add(("granularity_b", c_ds))
+                # Agent B extracted only Dataset-Level, while Agent A has specific organ breakdowns -> query Agent B
+                if agent_b_online and self.agent_b is not None and scores_b_d and not specific_organs_b and len(specific_organs_a) >= 1:
+                    if ("organ_breakdown_b", c_ds) not in seen_queries:
+                        queries_to_run.append(("organ_breakdown_b", c_ds, (ds_name_display, specific_organs_a)))
+                        seen_queries.add(("organ_breakdown_b", c_ds))
 
             # Identify items to re-interrogate (Disputes and Omissions)
             for cs in audit_report.consensus_scores:
@@ -345,7 +354,7 @@ class DualExtractionCoordinator:
                                 seen_queries.add(("omission_a", canon_ds))
 
             # Execute re-interrogations concurrently
-            results: Dict[Tuple[str, str], ReinterrogationScoreResponse] = {}
+            results: Dict[Tuple[str, str], Any] = {}
             with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, max(1, len(queries_to_run)))) as executor:
                 future_map = {}
                 for q_type, ds_key, cs in queries_to_run:
@@ -383,22 +392,22 @@ class DualExtractionCoordinator:
                             cs.dataset_name,
                             resolved_model_id,
                         )
-                    elif q_type == "granularity_a":
-                        ds_name_disp, organs_list = cs
+                    elif q_type == "organ_breakdown_a":
+                        ds_name_disp, target_organs = cs
                         f = executor.submit(
-                            self.agent_a.reinterrogate_granularity_macro,
+                            self.agent_a.reinterrogate_organ_breakdown,
                             manuscript,
                             ds_name_disp,
-                            organs_list,
+                            target_organs,
                             resolved_model_id,
                         )
-                    elif q_type == "granularity_b":
-                        ds_name_disp, organs_list = cs
+                    elif q_type == "organ_breakdown_b":
+                        ds_name_disp, target_organs = cs
                         f = executor.submit(
-                            self.agent_b.reinterrogate_granularity_macro,
+                            self.agent_b.reinterrogate_organ_breakdown,
                             manuscript,
                             ds_name_disp,
-                            organs_list,
+                            target_organs,
                             resolved_model_id,
                         )
                     else:
@@ -521,49 +530,53 @@ class DualExtractionCoordinator:
                         else:
                             round_details.append(f"Agent B verified exclusion of {canon_ds}: {resp_b.exclusion_reason or resp_b.rationale}")
 
-            # 5. Granularity Macro-Average Updates
+            # 5. Inverted Granularity Organ-Breakdown Updates
             for c_ds in sorted(list(all_canon_ds)):
-                if ("granularity_a", c_ds) in results:
-                    resp_a = results[("granularity_a", c_ds)]
-                    if resp_a.is_valid_benchmark and resp_a.dice_score is not None:
-                        already_has_overall = any(
-                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
-                            and (s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS
-                            for s in extracted_a.extracted_scores
-                        )
-                        if not already_has_overall:
-                            extracted_a.extracted_scores.append(
+                for tag, agent_label, target_extracted in (
+                    ("organ_breakdown_a", "Agent A", extracted_a),
+                    ("organ_breakdown_b", "Agent B", extracted_b),
+                ):
+                    if (tag, c_ds) not in results:
+                        continue
+                    resp = results[(tag, c_ds)]
+                    organ_scores = getattr(resp, "organ_scores", None) or []
+                    if not getattr(resp, "only_macro_average_reported", False) and organ_scores:
+                        added_organs: List[str] = []
+                        existing_organs = {
+                            (
+                                OrganAliasResolver.resolve(s.organ_or_task),
+                                auditor.normalize_data_budget(s.data_budget_or_setting),
+                            )
+                            for s in target_extracted.extracted_scores
+                            if not s.is_baseline_comparison
+                            and (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
+                        }
+                        for item in organ_scores:
+                            if item.dice_score is None:
+                                continue
+                            canon_org = OrganAliasResolver.resolve(item.organ_or_task)
+                            if OrganAliasResolver.is_dataset_level(canon_org):
+                                continue
+                            canon_bgt = auditor.normalize_data_budget(item.data_budget_or_setting)
+                            if (canon_org, canon_bgt) in existing_organs:
+                                continue
+                            target_extracted.extracted_scores.append(
                                 RawExtractedScore(
                                     dataset_name=c_ds,
-                                    organ_or_task="Overall",
-                                    dice_score=resp_a.dice_score,
-                                    prompt_type=resp_a.prompt_type or "automated",
-                                    table_or_section_ref=resp_a.table_or_section_ref,
-                                    notes=f"Aggregated macro-average recovered during deliberation round {round_num}: {resp_a.rationale}",
+                                    organ_or_task=canon_org,
+                                    dice_score=item.dice_score,
+                                    prompt_type=item.prompt_type or "automated",
+                                    data_budget_or_setting=item.data_budget_or_setting,
+                                    table_or_section_ref=item.table_or_section_ref or getattr(resp, "table_or_section_ref", None),
+                                    notes=f"Per-organ score recovered during deliberation round {round_num}: {getattr(resp, 'rationale', '')}",
                                 )
                             )
-                            round_details.append(f"Agent A extracted Overall macro-average for {c_ds}: {resp_a.dice_score}")
-
-                if ("granularity_b", c_ds) in results:
-                    resp_b = results[("granularity_b", c_ds)]
-                    if resp_b.is_valid_benchmark and resp_b.dice_score is not None:
-                        already_has_overall = any(
-                            (self.alias_resolver.resolve(s.dataset_name) or s.dataset_name or "").strip().lower() == c_ds.lower()
-                            and (s.organ_or_task or "").strip().lower() in OVERALL_SYNONYMS
-                            for s in extracted_b.extracted_scores
-                        )
-                        if not already_has_overall:
-                            extracted_b.extracted_scores.append(
-                                RawExtractedScore(
-                                    dataset_name=c_ds,
-                                    organ_or_task="Overall",
-                                    dice_score=resp_b.dice_score,
-                                    prompt_type=resp_b.prompt_type or "automated",
-                                    table_or_section_ref=resp_b.table_or_section_ref,
-                                    notes=f"Aggregated macro-average recovered during deliberation round {round_num}: {resp_b.rationale}",
-                                )
+                            existing_organs.add((canon_org, canon_bgt))
+                            added_organs.append(f"{canon_org}={item.dice_score}")
+                        if added_organs:
+                            round_details.append(
+                                f"{agent_label} recovered organ breakdown for {c_ds}: {', '.join(added_organs)}"
                             )
-                            round_details.append(f"Agent B extracted Overall macro-average for {c_ds}: {resp_b.dice_score}")
 
             # Re-evaluate consensus with updated extractions
             new_report = auditor.audit_consensus(

@@ -17,7 +17,13 @@ from agent_gmmis.auditing.schemas import (
 )
 from agent_gmmis.data.db_manager import DatabaseManager
 from agent_gmmis.data.enums import ScoreCategory
-from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver
+from agent_gmmis.extraction.alias_resolver import (
+    KNOWN_3D_DATASETS_AND_MODALITIES,
+    NON_3D_PHOTOGRAPHIC_MODALITIES,
+    DatasetAliasResolver,
+    OrganAliasResolver,
+    is_non_3d_photographic_score,
+)
 from agent_gmmis.extraction.pdf_parser import ParsedManuscript
 from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
 
@@ -130,24 +136,47 @@ class AuditorAgent:
     def normalize_data_budget(budget: Optional[str]) -> Optional[str]:
         """
         Normalizes data budget strings into canonical semantics (e.g. percentages or shots).
-        E.g. '100% labeled', '100% training data (24 samples)', 'fully supervised' -> '100%'
-             '25% labeled', '25% training data (6 samples)' -> '25%'
+        Full-supervision synonyms ('100%', '100% labeled', 'fully supervised', 'full',
+        'all', 'not applicable', 'n/a', 'none') and standard evaluation split labels
+        ('validation', 'testing', 'test', 'cross-validation', etc. when not paired with
+        sub-100% ratios or shot counts) normalize to None so default rows match consistently.
+        E.g. '25% labeled', '25% training data (6 samples)' -> '25%'
              '1-shot', '1 shot' -> '1-shot'
         """
         if not budget:
             return None
-        b_lower = budget.strip().lower()
+        b_lower = str(budget).strip().lower()
+        standard_splits_and_defaults = {
+            "n/a", "na", "none", "null", "not applicable", "full", "all", "standard",
+            "default", "baseline", "validation", "val", "testing", "test",
+            "validation set", "testing set", "test set", "val set",
+            "cross-validation", "cross validation", "cv", "fold", "5-fold",
+            "5-fold cv", "official", "leaderboard", "challenge", "hold-out",
+            "holdout", "internal", "external", "evaluation",
+        }
+        if not b_lower or b_lower in standard_splits_and_defaults:
+            return None
         # 1. Percentage check (e.g. 100%, 30%, 25%, 12%, 10%, 1%)
         pct_match = re.search(r"\b(\d{1,3})\s*%", b_lower)
         if pct_match:
+            if pct_match.group(1) == "100":
+                return None
             return f"{pct_match.group(1)}%"
         # 2. Shot check (e.g. 1-shot, 5-shot)
         shot_match = re.search(r"\b(\d{1,2})\s*-?\s*shots?\b", b_lower)
         if shot_match:
             return f"{shot_match.group(1)}-shot"
-        # 3. Supervised synonyms
-        if any(w in b_lower for w in ["fully supervised", "full data", "all data", "full training", "100 percent"]):
-            return "100%"
+        # 3. Supervised or standard evaluation-split phrases without percentage/shot budget
+        if any(
+            w in b_lower
+            for w in [
+                "fully supervised", "full data", "all data", "full training",
+                "100 percent", "full dataset", "not applicable", "cross-validation",
+                "cross validation", "validation", "testing", "test set", "val set",
+                "5-fold", "hold-out", "holdout",
+            ]
+        ):
+            return None
         return b_lower
 
     def audit(
@@ -184,20 +213,21 @@ class AuditorAgent:
         passed_screening = True
 
         # -------------------------------------------------------------
-        # 1. Inclusion Criteria Screening Check
+        # 1. Inclusion Criteria Screening Check (with Domain Override for 2D/Hybrid on 3D Scans)
         # -------------------------------------------------------------
-        if not extracted.screening.is_included:
-            # Domain Knowledge Override / Critic Correction:
-            # Check if the paper evaluates on known 3D volumetric benchmarks
-            # (e.g. ACDC, BraTS, BTCV, AMOS, KiTS, LiTS, MSD, TotalSegmentator).
-            # LLMs sometimes flag is_3d=False when a model performs 2D slice inference
-            # on 3D volumetric scans (like KnowSAM or nnU-Net 2D on ACDC).
-            eval_datasets = [s.dataset_name for s in extracted.extracted_scores]
-            canon_datasets = [self.alias_resolver.resolve(d) or d for d in eval_datasets]
-            known_3d_datasets = {"acdc", "brats", "btcv", "amos", "kits", "lits", "flare", "totalsegmentator", "synapse", "isles", "segthor"}
-            evaluates_known_3d = any(c.lower() in known_3d_datasets for c in canon_datasets)
+        eval_datasets = [s.dataset_name for s in extracted.extracted_scores if not s.is_baseline_comparison]
+        canon_datasets = [self.alias_resolver.resolve(d) or d for d in eval_datasets]
+        evaluates_known_3d = any(
+            (c.lower() in KNOWN_3D_DATASETS_AND_MODALITIES)
+            or ((s.modality or "").strip().lower() in {"ct", "mri", "pet", "cbct", "mra", "3d ct", "3d mri"})
+            for c, s in zip(canon_datasets, [sc for sc in extracted.extracted_scores if not sc.is_baseline_comparison])
+        )
+        # Apply inclusive override whenever 2D slice inference runs on canonical 3D volumetric scans
+        if not extracted.screening.is_3d and evaluates_known_3d and extracted.screening.is_radiological and extracted.screening.is_public_dataset and extracted.screening.has_dice_metric:
+            extracted.screening.is_3d = True
 
-            if not extracted.screening.is_3d and evaluates_known_3d and extracted.screening.is_radiological and extracted.screening.is_public_dataset and extracted.screening.has_dice_metric:
+        if not extracted.screening.is_included:
+            if extracted.screening.is_3d and extracted.screening.is_radiological and extracted.screening.is_public_dataset and extracted.screening.has_dice_metric:
                 passed_screening = True
             else:
                 passed_screening = False
@@ -693,9 +723,13 @@ class AuditorAgent:
         sc_a = extracted_a.screening
         sc_b = extracted_b.screening
 
+        # Note: self.audit() above has already propagated is_3d=True when evaluating known 3D benchmarks
+        eff_is_3d_a = sc_a.is_3d
+        eff_is_3d_b = sc_b.is_3d
+
         screening_disagreements: List[str] = []
-        if sc_a.is_3d != sc_b.is_3d:
-            screening_disagreements.append(f"is_3d (A={sc_a.is_3d}, B={sc_b.is_3d})")
+        if eff_is_3d_a != eff_is_3d_b:
+            screening_disagreements.append(f"is_3d (A={eff_is_3d_a}, B={eff_is_3d_b})")
         if sc_a.is_radiological != sc_b.is_radiological:
             screening_disagreements.append(f"is_radiological (A={sc_a.is_radiological}, B={sc_b.is_radiological})")
         if sc_a.is_public_dataset != sc_b.is_public_dataset:
@@ -715,8 +749,8 @@ class AuditorAgent:
         consensus_screening = ConsensusScreening(
             status=screening_status,
             is_included=is_included,
-            is_3d_a=sc_a.is_3d,
-            is_3d_b=sc_b.is_3d,
+            is_3d_a=eff_is_3d_a,
+            is_3d_b=eff_is_3d_b,
             is_radiological_a=sc_a.is_radiological,
             is_radiological_b=sc_b.is_radiological,
             is_public_a=sc_a.is_public_dataset,
@@ -794,33 +828,71 @@ class AuditorAgent:
         # 4. Reconcile Benchmark Scores (Semantic Alignment via DatasetAliasResolver)
         scores_a_by_canon: Dict[str, List[RawExtractedScore]] = {}
         for s in extracted_a.extracted_scores:
-            if not s.is_baseline_comparison:
-                resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
-                canon = (resolved or s.dataset_name or "Unknown").strip()
-                scores_a_by_canon.setdefault(canon.lower(), []).append(s)
+            if s.is_baseline_comparison:
+                continue
+            if is_non_3d_photographic_score(s.dataset_name, s.modality, s.organ_or_task):
+                continue
+            resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+            canon = (resolved or s.dataset_name or "Unknown").strip()
+            scores_a_by_canon.setdefault(canon.lower(), []).append(s)
 
         scores_b_by_canon: Dict[str, List[RawExtractedScore]] = {}
         for s in extracted_b.extracted_scores:
-            if not s.is_baseline_comparison:
-                resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
-                canon = (resolved or s.dataset_name or "Unknown").strip()
-                scores_b_by_canon.setdefault(canon.lower(), []).append(s)
+            if s.is_baseline_comparison:
+                continue
+            if is_non_3d_photographic_score(s.dataset_name, s.modality, s.organ_or_task):
+                continue
+            resolved = self.alias_resolver.resolve(s.dataset_name) if s.dataset_name else None
+            canon = (resolved or s.dataset_name or "Unknown").strip()
+            scores_b_by_canon.setdefault(canon.lower(), []).append(s)
+
+        def _consolidate_multiprompt_rows(rows: List[RawExtractedScore]) -> List[RawExtractedScore]:
+            """Takes peak Dice score across distinct prompt regimes on the same (canon_organ, canon_budget)."""
+            groups: Dict[Tuple[str, Optional[str]], List[RawExtractedScore]] = {}
+            for r in rows:
+                c_org = OrganAliasResolver.resolve(r.organ_or_task).lower()
+                c_bgt = self.normalize_data_budget(r.data_budget_or_setting)
+                groups.setdefault((c_org, c_bgt), []).append(r)
+
+            consolidated: List[RawExtractedScore] = []
+            for _, grp in groups.items():
+                distinct_prompts = {(g.prompt_type or "").strip().lower() for g in grp if g.prompt_type and g.prompt_type.strip()}
+                if len(grp) > 1 and len(distinct_prompts) > 1:
+                    best = max(grp, key=lambda x: x.dice_score if x.dice_score is not None else -1.0)
+                    consolidated.append(best)
+                else:
+                    consolidated.extend(grp)
+            return consolidated
 
         all_canon_keys = sorted(list(set(scores_a_by_canon.keys()) | set(scores_b_by_canon.keys())))
 
         consensus_scores: List[ConsensusScore] = []
         for canon_k in all_canon_keys:
-            list_a = scores_a_by_canon.get(canon_k, [])
-            list_b = scores_b_by_canon.get(canon_k, [])
+            raw_list_a = _consolidate_multiprompt_rows(scores_a_by_canon.get(canon_k, []))
+            raw_list_b = _consolidate_multiprompt_rows(scores_b_by_canon.get(canon_k, []))
+
+            has_specific_a = any(not OrganAliasResolver.is_dataset_level(s.organ_or_task) for s in raw_list_a)
+            has_specific_b = any(not OrganAliasResolver.is_dataset_level(s.organ_or_task) for s in raw_list_b)
+
+            # When BOTH agents have granular per-organ rows on this dataset, strip redundant Dataset-Level rows
+            # so overall averages do not dilute or mispair per-organ IAA. If one agent only has Dataset-Level,
+            # retain Dataset-Level on the peer so valid Dataset-Level pairing can still occur.
+            if has_specific_a and has_specific_b:
+                list_a = [s for s in raw_list_a if not OrganAliasResolver.is_dataset_level(s.organ_or_task)]
+                list_b = [s for s in raw_list_b if not OrganAliasResolver.is_dataset_level(s.organ_or_task)]
+            else:
+                list_a = raw_list_a
+                list_b = raw_list_b
 
             if list_a and not list_b:
                 for s_a in list_a:
                     canon_a = (self.alias_resolver.resolve(s_a.dataset_name) if s_a.dataset_name else None) or s_a.dataset_name or "Unknown"
+                    canon_org_a = OrganAliasResolver.resolve(s_a.organ_or_task)
                     consensus_scores.append(
                         ConsensusScore(
                             dataset_name=s_a.dataset_name,
                             canonical_dataset_name=canon_a,
-                            organ_or_task=s_a.organ_or_task,
+                            organ_or_task=canon_org_a,
                             status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
                             score_a=s_a.dice_score,
                             score_b=None,
@@ -837,11 +909,12 @@ class AuditorAgent:
             if list_b and not list_a:
                 for s_b in list_b:
                     canon_b = (self.alias_resolver.resolve(s_b.dataset_name) if s_b.dataset_name else None) or s_b.dataset_name or "Unknown"
+                    canon_org_b = OrganAliasResolver.resolve(s_b.organ_or_task)
                     consensus_scores.append(
                         ConsensusScore(
                             dataset_name=s_b.dataset_name,
                             canonical_dataset_name=canon_b,
-                            organ_or_task=s_b.organ_or_task,
+                            organ_or_task=canon_org_b,
                             status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
                             score_a=None,
                             score_b=s_b.dice_score,
@@ -858,49 +931,51 @@ class AuditorAgent:
             # Present in both -> match individual score rows using optimal greedy bipartite matching
             candidate_pairs = []
             for idx_a, s_a in enumerate(list_a):
-                organ_a_norm = (s_a.organ_or_task or "").strip().lower()
+                canon_org_a = OrganAliasResolver.resolve(s_a.organ_or_task)
+                organ_a_norm = canon_org_a.lower()
+                is_overall_a = canon_org_a == "Dataset-Level"
                 prompt_a_norm = (s_a.prompt_type or "").strip().lower()
                 budget_a_norm = (s_a.data_budget_or_setting or "").strip().lower()
                 sem_budget_a = self.normalize_data_budget(s_a.data_budget_or_setting)
+                ref_a_norm = (s_a.table_or_section_ref or "").strip().lower()
 
                 for idx_b, s_b in enumerate(list_b):
-                    organ_b_norm = (s_b.organ_or_task or "").strip().lower()
+                    canon_org_b = OrganAliasResolver.resolve(s_b.organ_or_task)
+                    organ_b_norm = canon_org_b.lower()
+                    is_overall_b = canon_org_b == "Dataset-Level"
                     prompt_b_norm = (s_b.prompt_type or "").strip().lower()
                     budget_b_norm = (s_b.data_budget_or_setting or "").strip().lower()
                     sem_budget_b = self.normalize_data_budget(s_b.data_budget_or_setting)
+                    ref_b_norm = (s_b.table_or_section_ref or "").strip().lower()
 
-                    # If both explicitly specify contradictory data budget splits (e.g. 10% vs 20%), do not match as same test
-                    if sem_budget_a and sem_budget_b and sem_budget_a != sem_budget_b:
+                    # Normalized budget must match (full supervision/100%/None all map to None)
+                    if sem_budget_a != sem_budget_b:
                         continue
-
-                    OVERALL_SYNONYMS = {"overall", "mean", "average", "avg", "multi-organ mean", "macro average", "all organs", "multi-organ", "total"}
-
-                    is_overall_a = organ_a_norm in OVERALL_SYNONYMS
-                    is_overall_b = organ_b_norm in OVERALL_SYNONYMS
 
                     diff_score = abs(s_a.dice_score - s_b.dice_score) if (s_a.dice_score is not None and s_b.dice_score is not None) else 1.0
 
-                    # If one is an aggregated macro-average and the other is a specific organ, do not match as the same test
-                    # unless both agents extracted only 1 row for this dataset or the scores match identically
-                    if is_overall_a != is_overall_b and (organ_a_norm and organ_b_norm):
+                    # Do not match Dataset-Level aggregate with a specific anatomical organ
+                    # unless both agents extracted only 1 row for this dataset and scores match tightly
+                    if is_overall_a != is_overall_b:
                         if not (len(list_a) == 1 and len(list_b) == 1) and diff_score > 0.01:
                             continue
 
                     match_pts = 0
-                    if organ_a_norm == organ_b_norm or (not organ_a_norm and not organ_b_norm):
-                        match_pts += 3
-                    elif is_overall_a and is_overall_b:
-                        match_pts += 3
-                    elif organ_a_norm in organ_b_norm or organ_b_norm in organ_a_norm:
+                    if organ_a_norm == organ_b_norm:
+                        match_pts += 4
+                    elif not is_overall_a and not is_overall_b and (organ_a_norm in organ_b_norm or organ_b_norm in organ_a_norm):
                         match_pts += 2
 
                     if prompt_a_norm and prompt_b_norm and prompt_a_norm == prompt_b_norm:
                         match_pts += 2
 
-                    if sem_budget_a and sem_budget_b and sem_budget_a == sem_budget_b:
+                    if ref_a_norm and ref_b_norm and ref_a_norm == ref_b_norm:
+                        match_pts += 3
+
+                    if sem_budget_a == sem_budget_b:
                         match_pts += 3
                     elif budget_a_norm and budget_b_norm and budget_a_norm == budget_b_norm:
-                        match_pts += 3
+                        match_pts += 2
 
                     if diff_score <= 0.01:
                         match_pts += 5
@@ -957,7 +1032,7 @@ class AuditorAgent:
                     ConsensusScore(
                         dataset_name=s_a.dataset_name,
                         canonical_dataset_name=canon_name,
-                        organ_or_task=s_a.organ_or_task or s_b.organ_or_task,
+                        organ_or_task=OrganAliasResolver.resolve(s_a.organ_or_task or s_b.organ_or_task),
                         status=status,
                         score_a=val_a,
                         score_b=val_b,
@@ -979,7 +1054,7 @@ class AuditorAgent:
                         ConsensusScore(
                             dataset_name=s_a.dataset_name,
                             canonical_dataset_name=canon_name,
-                            organ_or_task=s_a.organ_or_task,
+                            organ_or_task=OrganAliasResolver.resolve(s_a.organ_or_task),
                             status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
                             score_a=s_a.dice_score,
                             score_b=None,
@@ -1000,7 +1075,7 @@ class AuditorAgent:
                         ConsensusScore(
                             dataset_name=s_b.dataset_name,
                             canonical_dataset_name=canon_name,
-                            organ_or_task=s_b.organ_or_task,
+                            organ_or_task=OrganAliasResolver.resolve(s_b.organ_or_task),
                             status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
                             score_a=None,
                             score_b=s_b.dice_score,
@@ -1024,12 +1099,25 @@ class AuditorAgent:
         paired_count = len(paired_scores)
         total_unique_benchmarks = len(consensus_scores)
 
-        # Concordance rate is strictly calculated on common paired extractions (true Inter-Annotator Agreement)
-        concordance_rate = (
+        # Paired IAA: concordant / paired
+        paired_concordance_rate = (
             round(concordant_count / paired_count, 4)
             if paired_count > 0
             else (1.0 if (not dispute_count and concordant_count > 0) else 0.0)
         )
+        concordance_rate = paired_concordance_rate
+
+        # Strict Total IAA (Jaccard-style): concordant / (concordant + disputed + single_agent_unconfirmed)
+        total_items_iaa = concordant_count + dispute_count + unconfirmed_count
+        strict_concordance_rate = (
+            round(concordant_count / total_items_iaa, 4)
+            if total_items_iaa > 0
+            else 0.0
+        )
+
+        # Exact IAA: fraction of paired scores within <= 0.001 Dice tolerance
+        exact_count = len([cs for cs in paired_scores if cs.delta is not None and cs.delta <= 0.001])
+        exact_concordance_rate = round(exact_count / paired_count, 4) if paired_count > 0 else 0.0
 
         # 6. Overall Certification Status & Confidence Score
         # In a dual-agent architecture, a single agent's critical anomaly (e.g. hallucinated training table rows in Agent A)
@@ -1220,10 +1308,17 @@ class AuditorAgent:
             consensus_screening=consensus_screening,
             consensus_metadata=consensus_metadata,
             inter_model_dice_mae=inter_model_dice_mae,
+            inter_agent_mae=inter_model_dice_mae,
             concordance_rate=concordance_rate,
+            paired_concordance_rate=paired_concordance_rate,
+            strict_concordance_rate=strict_concordance_rate,
+            exact_concordance_rate=exact_concordance_rate,
             concordant_count=concordant_count,
             dispute_count=dispute_count,
             unconfirmed_count=unconfirmed_count,
+            concordant_organs_count=concordant_count,
+            disputed_organs_count=dispute_count,
+            singleton_organs_count=unconfirmed_count,
             paired_count=paired_count,
             total_unique_benchmarks=total_unique_benchmarks,
             audit_report_a=report_a,

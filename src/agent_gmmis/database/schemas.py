@@ -16,6 +16,7 @@ class CurationActionType(str, Enum):
     PRESERVE_EXISTING_PEAK = "preserve_existing_peak"
     SKIP_DISPUTED_SCORE = "skip_disputed_score"
     SKIP_UNCONFIRMED_SCORE = "skip_unconfirmed_score"
+    SKIP_LOW_CONFIDENCE = "skip_low_confidence"
     RECORD_PROVENANCE_COMMENT = "record_provenance_comment"
 
 
@@ -23,7 +24,8 @@ class ScoreCurationDiff(BaseModel):
     """Detailed record of a score evaluation, decision, and SQL mutation."""
 
     dataset_name: str = Field(..., description="Canonical dataset benchmark name")
-    target_table: str = Field(..., description="'results_best' or 'results_primary'")
+    organ_name: Optional[str] = Field(None, description="Canonical organ / sub-task name or 'Dataset-Level'")
+    target_table: str = Field(..., description="'results_best', 'results_primary', or 'results_organ_scores'")
     action: CurationActionType
     previous_score: Optional[float] = Field(None, description="Previous score in DB (percentage [0, 100])")
     new_score: Optional[float] = Field(None, description="Candidate new score (percentage [0, 100])")

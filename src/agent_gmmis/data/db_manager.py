@@ -136,6 +136,8 @@ class DatabaseManager:
         Returns: [(model_id, dice_score), ...]
         """
         table = "results_best" if category == ScoreCategory.BEST else "results_primary"
+        if not self.has_column(table, dataset_name):
+            return []
         query = f'SELECT ID, "{dataset_name}" as score FROM {table} WHERE "{dataset_name}" IS NOT NULL ORDER BY "{dataset_name}" DESC LIMIT ?;'
 
         with self._get_connection() as conn:
@@ -144,8 +146,8 @@ class DatabaseManager:
                 cursor.execute(query, (top_k,))
                 rows = cursor.fetchall()
                 return [(row["ID"], round(float(row["score"]), 4)) for row in rows]
-            except sqlite3.OperationalError:
-                # Column does not exist in table
+            except (sqlite3.OperationalError, ValueError, TypeError):
+                # Column does not exist in table or contains non-numeric values
                 return []
 
     def get_dataset_statistics(
@@ -160,6 +162,8 @@ class DatabaseManager:
         or None if dataset column doesn't exist or has 0 entries.
         """
         table = "results_best" if category == ScoreCategory.BEST else "results_primary"
+        if not self.has_column(table, dataset_name):
+            return None
         query = f'SELECT MIN("{dataset_name}"), MAX("{dataset_name}"), AVG("{dataset_name}"), COUNT("{dataset_name}") FROM {table} WHERE "{dataset_name}" IS NOT NULL;'
 
         with self._get_connection() as conn:
@@ -178,7 +182,7 @@ class DatabaseManager:
                     "mean": round(mean_v, 4),
                     "count": int(row[3]),
                 }
-            except sqlite3.OperationalError:
+            except (sqlite3.OperationalError, ValueError, TypeError):
                 return None
 
     # ---------------------------------------------------------
@@ -258,6 +262,109 @@ class DatabaseManager:
                 (now, model_id, action_type, status, audit_status, audit_confidence, diff_payload, notes),
             )
             conn.commit()
+
+    def init_organ_scores_table(self) -> None:
+        """Creates the normalized per-organ benchmark table if it does not already exist."""
+        query = """
+        CREATE TABLE IF NOT EXISTS results_organ_scores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            model_id TEXT NOT NULL,
+            dataset_name TEXT NOT NULL,
+            organ_name TEXT NOT NULL,
+            dice_score REAL NOT NULL,
+            prompt_type TEXT,
+            data_budget TEXT,
+            is_verified INTEGER NOT NULL DEFAULT 1,
+            source_paper TEXT,
+            updated_at TEXT NOT NULL,
+            UNIQUE(model_id, dataset_name, organ_name)
+        );
+        """
+        with self._get_connection() as conn:
+            conn.execute(query)
+            conn.commit()
+
+    def upsert_organ_score(
+        self,
+        model_id: str,
+        dataset_name: str,
+        organ_name: str,
+        dice_score: float,
+        prompt_type: Optional[str] = None,
+        data_budget: Optional[str] = None,
+        is_verified: bool = True,
+        source_paper: Optional[str] = None,
+    ) -> None:
+        """Inserts or updates a per-organ Dice score [0.0, 100.0] using monotonic peak improvement."""
+        self.init_organ_scores_table()
+        import datetime
+
+        now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        val = float(dice_score)
+        dice_pct = round(val * 100.0, 2) if val <= 1.0 else round(val, 2)
+        verified_int = 1 if is_verified else 0
+
+        query = """
+        INSERT INTO results_organ_scores (
+            model_id, dataset_name, organ_name, dice_score,
+            prompt_type, data_budget, is_verified, source_paper, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(model_id, dataset_name, organ_name) DO UPDATE SET
+            dice_score = excluded.dice_score,
+            prompt_type = excluded.prompt_type,
+            data_budget = excluded.data_budget,
+            is_verified = excluded.is_verified,
+            source_paper = excluded.source_paper,
+            updated_at = excluded.updated_at
+        WHERE excluded.dice_score > results_organ_scores.dice_score;
+        """
+        with self._get_connection() as conn:
+            conn.execute(
+                query,
+                (
+                    model_id,
+                    dataset_name,
+                    organ_name,
+                    dice_pct,
+                    prompt_type,
+                    data_budget,
+                    verified_int,
+                    source_paper,
+                    now,
+                ),
+            )
+            conn.commit()
+
+    def get_organ_scores_for_model(
+        self,
+        model_id: str,
+        dataset_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves all normalized per-organ benchmark scores recorded for a given model."""
+        self.init_organ_scores_table()
+        if dataset_name is not None:
+            query = """
+            SELECT model_id, dataset_name, organ_name, dice_score,
+                   prompt_type, data_budget, is_verified, source_paper, updated_at
+            FROM results_organ_scores
+            WHERE model_id = ? AND dataset_name = ?
+            ORDER BY organ_name ASC;
+            """
+            params: Tuple[Any, ...] = (model_id, dataset_name)
+        else:
+            query = """
+            SELECT model_id, dataset_name, organ_name, dice_score,
+                   prompt_type, data_budget, is_verified, source_paper, updated_at
+            FROM results_organ_scores
+            WHERE model_id = ?
+            ORDER BY dataset_name ASC, organ_name ASC;
+            """
+            params = (model_id,)
+
+        with self._get_connection() as conn:
+            cur = conn.execute(query, params)
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
 
     def get_score_raw(
         self,

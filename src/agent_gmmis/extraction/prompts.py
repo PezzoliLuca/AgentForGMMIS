@@ -15,7 +15,7 @@ Follow these strict extraction guidelines:
    - For each extracted score, record its precise `derivation_rationale` citing the exact table, row, column, and prompt setting (e.g. 'Table 2, row 3, bbox prompt').
 
 1. INCLUSION/EXCLUSION SCREENING:
-   - Check if the paper evaluates 3D radiological volumes (CT, MRI, PET). If a model evaluates on 3D volumetric medical scans (such as 3D CT or 3D MRI like ACDC, BraTS, BTCV) via 2D slice-by-slice inference, it IS considered a valid 3D radiological evaluation (is_3d=True). Only set is_3d=False if the underlying data domain is purely 2D (e.g. 2D fundus photography, 2D dermoscopy, 2D microscopy).
+   - Check if the paper evaluates 3D radiological volumes (CT, MRI, PET). If a 2D or hybrid model (e.g., SAM-Med2D, MedSAM, 2.5D UNet) evaluates on 3D volumetric medical scans (such as 3D CT or 3D MRI like ACDC, BraTS, BTCV, AMOS, KiTS, TotalSegmentator, FLARE, LiTS) via 2D slice-by-slice inference, it IS considered a valid 3D radiological evaluation (is_3d=True). Only set is_3d=False if the paper exclusively evaluates on 2D non-volumetric photographic/planar domains (e.g. Dermoscopy, Fundus Photography, Microscopy/Pathology, Endoscopy, Ultrasound, X-Ray).
    - Check if public datasets are used (e.g. BraTS, AMOS, BTCV, KiTS, LiTS, TotalSegmentator, ACDC). Exclude private/hospital-only datasets.
    - Confirm that the Dice Similarity Coefficient (DSC) is reported.
 
@@ -26,22 +26,23 @@ Follow these strict extraction guidelines:
    - Extract hardware training resources (GPU type, number of GPUs) and total VRAM in GB.
    - Extract code/GitHub repository URL if provided.
 
-3. BENCHMARK TABLE EXTRACTION:
+3. BENCHMARK TABLE EXTRACTION & MULTI-MODALITY FILTERING:
    - Carefully inspect tables reporting segmentation performance.
+   - MULTI-MODALITY TABLE FILTERING: Hybrid/2D foundation models (e.g., SAM-Med2D, MedSAM, UniverSeg) often evaluate on both 3D radiological volumes (CT, MRI, PET) and 2D photographic/planar domains (Dermoscopy, ISIC, Fundus/DRIVE/REFUGE, Histopathology/GlaS/MoNuSeg, Endoscopy/Kvasir/CVC-ClinicDB, Chest X-Ray, 2D Ultrasound) within the same paper. You MUST extract ONLY 3D volumetric radiological benchmarks (CT, MRI, PET, CBCT, MRA) and skip purely 2D photographic/planar datasets (or accurately label their `modality` so non-3D photographic rows are filtered).
    - Extract Dice scores ONLY. Do NOT confuse Dice with HD95, IoU, or standard deviation!
    - If scores are reported in percentages (e.g. 88.5%), normalize to [0.0, 1.0] (0.885).
    - Distinguish whether a score belongs to the PROPOSED model or an evaluated BASELINE model (e.g. nnU-Net, Swin UNETR).
    - Identify the canonical dataset name and target organ/task. When a paper mentions challenge datasets under generic organ or modality labels, resolve them to their standard canonical challenge name if disclosed in the text (e.g. "Abdomen CT" / FLARE -> "FLARE", "Abdomen MR" / AMOS -> "AMOS", "Synapse" / Beyond the Cranial Vault -> "BTCV", "BraTS21" -> "BraTS", "ATLAS v2.0" -> "ATLAS v2.0", "Prost.MRI" / PROMISE12 -> "PROMISE12", "Fed-KiTS" -> "KiTS", "TotalSegmentator" -> "TotalSegmentator").
    - TABLE PRIORITIZATION (SOTA OVER ABLATIONS): Prioritize the primary comparative benchmark table (typically titled "Comparison with State-of-the-Art", "Main Results", or "Test Set Evaluation") over internal ablation study tables (e.g. hyperparameter tuning sweeps, feature ablations, or validation-only checks).
    - TABLE CAPTION & DATASET GROUNDING CHECK: Before assigning a score to a dataset (e.g. `dataset_name='ATLAS v2.0'`), you MUST verify that the table's caption or header explicitly evaluates that specific dataset! If a table caption states "on BraTS" (e.g. Table 8), you are STRICTLY PROHIBITED from tagging those scores as "ATLAS v2.0", even if ATLAS is evaluated elsewhere in the paper (e.g. Table 6). Every extracted score must be strictly grounded in the specific table that evaluated that dataset.
-   - MACRO-AVERAGE VS SINGLE ORGANS (MANDATORY HIERARCHICAL RULE): In multi-organ or multi-class benchmarks (e.g. 13 organs in BTCV / Synapse, or WT/ET/TC in BraTS):
-     * The survey database tracks the MACRO-AVERAGE across all classes (the 'Avg', 'Mean', 'Overall', or 'mDice' column/row).
-     * You MUST extract the 'Avg'/'Mean' column with `organ_or_task='Overall'`.
-     * If extracting individual organ scores (e.g. Liver, Spleen, Kidney), ALWAYS assign their specific anatomical name (`organ_or_task='Liver'`). NEVER label an individual organ score as 'Overall'!
-     * NEVER select an individual easy organ (such as Liver 97.2% or Spleen 96.6%) as the dataset score!
-   - PEAK PROMPT REGIME: For promptable/interactive models (e.g. SAM architectures), extract the highest (maximum achievable) Macro-Average Dice score across tested prompt regimes (e.g. bounding box prompt vs 5-point click vs 1-point click). Record the prompt regime in `prompt_type` (e.g. "bounding box", "5 points", "1 point", "automated"). Never select an under-prompted score (such as 1-point click) if the paper demonstrates higher valid performance with a box or multi-point prompt on the Overall metric.
-   - MULTI-MODALITY & TEST SETS: If a table reports results across multiple modalities (e.g. T1, T2, T1ce, FLAIR) or multiple test sets (e.g. MRI test set vs CT test set in TotalSegmentator), extract each score and also the overall mean if reported.
-   - DATA PARTITIONS & BUDGETS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM, SFR SAM), tables report varying amounts of labeled data (e.g. 1%, 5%, 10%, 100%) or learning settings (Federated vs Centralized, Communication rounds). Always extract each setting and record it in `data_budget_or_setting` (e.g. "10% labeled", "1% labeled", "5 clients") so multiple legitimate experimental regimes are distinguished from duplicate contradictions!
+   - PER-ORGAN GRANULAR EXTRACTION MANDATE: In multi-organ or multi-class benchmarks (e.g. 13 organs in BTCV / Synapse, WT/ET/TC in BraTS, RV/Myo/LV in ACDC):
+     * You MUST extract EVERY individual anatomical organ or tumor sub-region score reported in the table, assigning its exact specific anatomical name in `organ_or_task` (e.g. `organ_or_task='Liver'`, `'Spleen'`, `'Pancreas'`, `'Whole Tumor (WT)'`, `'Enhancing Tumor (ET)'`, `'Tumor Core (TC)'`).
+     * Extract individual organ rows EVEN IF an 'Avg', 'Mean', or 'Overall' column/row is also present in the table!
+     * ONLY use `organ_or_task='Overall'` when the table ONLY reports an aggregated mean/average across the dataset without individual organ breakdowns, OR alongside the individual organ rows when an explicit 'Average'/'Mean' column is reported.
+     * NEVER label an individual organ score (such as Liver 97.2% or Spleen 96.6%) as 'Overall'!
+   - PEAK PROMPT REGIME: For promptable/interactive models (e.g. SAM architectures), extract the highest (maximum achievable) Dice score across tested prompt regimes (e.g. bounding box prompt vs 5-point click vs 1-point click). Record the prompt regime in `prompt_type` (e.g. "bounding box", "5 points", "1 point", "automated").
+   - MULTI-MODALITY & TEST SETS: If a table reports results across multiple radiological modalities (e.g. T1, T2, T1ce, FLAIR) or multiple test sets (e.g. MRI test set vs CT test set in TotalSegmentator), extract each score and also the overall mean if reported.
+   - DATA PARTITIONS & BUDGETS: In semi-supervised, federated, or few-shot papers (e.g. KnowSAM, FLAP-SAM, SFR SAM), tables report varying amounts of labeled data (e.g. 1%, 5%, 10%, 100%) or learning settings (Federated vs Centralized, Communication rounds). Always extract each setting and record it in `data_budget_or_setting` (e.g. "10% labeled", "1% labeled", "5 clients") so multiple legitimate experimental regimes are distinguished from duplicate contradictions! For standard full-supervision / 100% dataset settings, set `data_budget_or_setting='100%'` or `None`.
 
 4. ACCURACY AND HONESTY:
    - Do NOT guess or hallucinate numbers. If a parameter or metric is not disclosed in the text or tables, set it to None. If a dataset is mentioned only in a graphical plot without exact numbers, set dice_score to None.
@@ -60,7 +61,7 @@ Total Pages: {total_pages}
 {content}
 
 Perform a thorough step-by-step Chain-of-Thought reasoning analysis in `thought_process` FIRST, then extract the complete structured output conforming to the required schema.
-Prioritize the primary comparative benchmark tables of the proposed model, capturing the peak (maximum achievable) Dice score for each evaluated dataset (extract up to the top 25 key evaluation benchmark scores) with clear derivation rationales.
+Prioritize the primary comparative benchmark tables of the proposed model, capturing all per-organ / per-task breakdowns as well as overall dataset scores and peak Dice configurations across every evaluated 3D radiological dataset with clear derivation rationales.
 """
 
 # ==============================================================================
@@ -116,28 +117,31 @@ Please verify this benchmark candidate:
 3. If it should be excluded (e.g. 2D, private, baseline-only, or graphical-only without scalar values), set is_valid_benchmark=False and state the reason.
 """
 
-BLIND_GRANULARITY_SYSTEM_PROMPT = """You are an expert scientific AI researcher conducting a double-blind peer deliberation on a medical image segmentation benchmark.
-Your task is to identify whether an aggregated Macro-Average / Overall Mean Dice score is reported in the paper for a benchmark dataset where individual anatomical sub-structures were extracted.
+BLIND_ORGAN_BREAKDOWN_SYSTEM_PROMPT = """You are an expert scientific AI researcher conducting a double-blind peer deliberation on a medical image segmentation benchmark.
+Your task is to locate and extract individual anatomical organ or tumor sub-region Dice scores reported in the manuscript for a benchmark dataset where only an aggregated overall mean was initially captured.
 
 Strict Deliberation Guidelines:
-1. BENCHMARK DATABASE REQUIREMENT: Literature benchmarks and database schemas index the single representative Macro-Average / Overall Mean Dice score (DSC) across all classes/organs for each public challenge.
-2. AGGREGATED METRIC IDENTIFICATION: Re-inspect the evaluation tables for the specified dataset. Look specifically for a summary row or column labeled 'Average', 'Mean', 'Macro-Average', 'Overall', 'Total', or 'All'.
-3. PEAK OVERALL PERFORMANCE: Extract the aggregated Overall/Mean DSC score achieved by the proposed model.
-4. EXPLICIT ABSENCE: If and only if the paper does NOT provide any aggregated mean score and only reports separate individual organ scores, state this clearly in your rationale.
-5. ABSOLUTE HONESTY: Do NOT calculate or guess a synthetic number; only extract what is explicitly written in the manuscript text/tables.
+1. PER-ORGAN GRANULARITY REQUIREMENT: Re-inspect all evaluation tables for the specified dataset in the manuscript. Extract the individual organ / sub-task Dice scores (e.g. Liver, Spleen, Kidney, Whole Tumor (WT), Enhancing Tumor (ET), Tumor Core (TC)) achieved by the proposed model.
+2. SPECIFIC ANATOMICAL NAMES: Assign each extracted item its exact specific anatomical name in `organ_or_task` (e.g. 'Liver', 'Spleen'). Normalize all scores to [0.0, 1.0].
+3. EXPERIMENTAL SETTING: Preserve exact `prompt_type` and `data_budget_or_setting` (use '100%' or None if full-supervision standard).
+4. EXPLICIT ABSENCE: If and only if the manuscript exclusively reports a single aggregated Mean/Overall score and provides zero individual organ breakdowns in any table or section, set `only_macro_average_reported=True` and leave `organ_scores=[]`.
+5. ABSOLUTE HONESTY: Do NOT calculate, split, or guess numbers; only extract exact figures written in the manuscript tables/text.
 """
 
-BLIND_GRANULARITY_USER_TEMPLATE = """On dataset '{dataset_name}', you extracted individual organ/task breakdown scores ({organs_summary}), but did not extract an aggregated 'Overall' or 'Mean' score.
+BLIND_ORGAN_BREAKDOWN_USER_TEMPLATE = """On dataset '{dataset_name}', you only extracted an aggregated 'Overall'/'Dataset-Level' Dice score without individual anatomical breakdowns, whereas the paper's benchmark tables may report per-organ / per-task Dice scores (including targets such as: {target_organs}).
 
-A peer reviewer notes that benchmark indexing requires the single aggregated Macro-Average / Overall Mean Dice score (DSC) achieved by the proposed model '{proposed_model_id}' on '{dataset_name}'.
+Please re-inspect the manuscript tables for the proposed model '{proposed_model_id}' on '{dataset_name}':
 
 === RELEVANT MANUSCRIPT TABLES & CONTENT ===
 {content}
 
 Please re-evaluate:
-1. Re-inspect the table(s) reporting '{dataset_name}'.
-2. Does the table contain an explicit 'Average', 'Mean', 'Macro-Average', or 'Overall' row/column for '{proposed_model_id}'?
-3. If YES: Extract that exact aggregated Dice score, specifying prompt setting and table reference. Set organ_or_task='Overall'.
-4. If NO: Explicitly state in the rationale that the manuscript only reports organ breakdowns and provides no overall mean.
+1. Locate the table(s) evaluating '{dataset_name}' for '{proposed_model_id}'.
+2. Extract every reported individual anatomical organ / lesion / sub-region Dice score into `organ_scores` with its specific `organ_or_task` name, `prompt_type`, `data_budget_or_setting`, and `source_table_or_section`.
+3. If and only if no per-organ breakdown exists anywhere in the paper for '{dataset_name}', set `only_macro_average_reported=True` and leave `organ_scores` empty.
 """
+
+# Legacy granularity prompt names retained for backward import compatibility
+BLIND_GRANULARITY_SYSTEM_PROMPT = BLIND_ORGAN_BREAKDOWN_SYSTEM_PROMPT
+BLIND_GRANULARITY_USER_TEMPLATE = BLIND_ORGAN_BREAKDOWN_USER_TEMPLATE
 

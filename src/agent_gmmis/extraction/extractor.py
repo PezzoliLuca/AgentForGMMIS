@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 from typing import List, Optional, Union
+from agent_gmmis.extraction.alias_resolver import is_non_3d_photographic_score
 from agent_gmmis.extraction.pdf_parser import PDFParser, ParsedManuscript
 from agent_gmmis.extraction.prompts import (
     BLIND_DISCREPANCY_SYSTEM_PROMPT,
@@ -11,10 +12,16 @@ from agent_gmmis.extraction.prompts import (
     BLIND_GRANULARITY_USER_TEMPLATE,
     BLIND_OMISSION_SYSTEM_PROMPT,
     BLIND_OMISSION_USER_TEMPLATE,
+    BLIND_ORGAN_BREAKDOWN_SYSTEM_PROMPT,
+    BLIND_ORGAN_BREAKDOWN_USER_TEMPLATE,
     EXTRACTION_SYSTEM_PROMPT,
     EXTRACTION_USER_PROMPT_TEMPLATE,
 )
-from agent_gmmis.extraction.schemas import ExtractedPaperData, ReinterrogationScoreResponse
+from agent_gmmis.extraction.schemas import (
+    ExtractedPaperData,
+    ReinterrogationOrganBreakdownResponse,
+    ReinterrogationScoreResponse,
+)
 from agent_gmmis.llm.client import LLMClient
 
 
@@ -31,14 +38,18 @@ class ExtractionAgent:
         return self.process_manuscript(manuscript)
 
     def get_default_context_chars(self) -> int:
-        """Determines optimal character budget based on model context window."""
+        """Determines optimal character budget based on model context window (40GB A100 / Cloud)."""
         if not self.llm or not hasattr(self.llm, "config"):
             return 45000
         provider = (getattr(self.llm.config, "provider", "") or "").lower()
         if provider == "gemini":
             return 80000
-        elif provider in ("mufasa", "ollama", "vllm"):
-            return 16000
+        elif provider == "mufasa":
+            # On 40GB A100 GPU (24k-32k token context window), 35,000 chars (~10k tokens)
+            # captures 7-9 dense benchmark pages with ample KV-cache & output headroom
+            return 35000
+        elif provider in ("ollama", "vllm"):
+            return 24000
         return 45000
 
     def _score_page(self, page_num: int, text: str, focal_keywords: Optional[List[str]] = None) -> float:
@@ -147,6 +158,18 @@ class ExtractionAgent:
         if not extracted_data.proposed_model_id:
             extracted_data.proposed_model_id = manuscript.title or "ProposedModel"
 
+        # Deterministically filter out purely 2D photographic/planar domains when mixed in multi-modality tables
+        if extracted_data.extracted_scores:
+            extracted_data.extracted_scores = [
+                s
+                for s in extracted_data.extracted_scores
+                if not is_non_3d_photographic_score(
+                    dataset_name=s.dataset_name,
+                    modality=s.modality,
+                    organ_or_task=s.organ_or_task,
+                )
+            ]
+
         return extracted_data
 
     def reinterrogate_discrepancy(
@@ -233,5 +256,33 @@ class ExtractionAgent:
             prompt=prompt,
             response_model=ReinterrogationScoreResponse,
             system_prompt=BLIND_GRANULARITY_SYSTEM_PROMPT,
+        )
+
+    def reinterrogate_organ_breakdown(
+        self,
+        manuscript: ParsedManuscript,
+        dataset_name: str,
+        target_organs: List[str],
+        proposed_model_id: str,
+    ) -> ReinterrogationOrganBreakdownResponse:
+        """Re-interrogates an agent that only extracted a macro-average to locate per-organ Dice breakdowns.
+
+        Double-blind: provides anatomical target structure names without disclosing competitor numeric scores.
+        """
+        content = self._build_context_content(
+            manuscript,
+            focal_keywords=[dataset_name, proposed_model_id] + list(target_organs[:6]),
+        )
+        targets_str = ", ".join(target_organs[:15]) if target_organs else "individual anatomical structures"
+        prompt = BLIND_ORGAN_BREAKDOWN_USER_TEMPLATE.format(
+            dataset_name=dataset_name,
+            target_organs=targets_str,
+            proposed_model_id=proposed_model_id or (manuscript.title if manuscript else "Proposed Model"),
+            content=content,
+        )
+        return self.llm.generate_structured(
+            prompt=prompt,
+            response_model=ReinterrogationOrganBreakdownResponse,
+            system_prompt=BLIND_ORGAN_BREAKDOWN_SYSTEM_PROMPT,
         )
 

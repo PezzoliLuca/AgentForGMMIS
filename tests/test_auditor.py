@@ -379,4 +379,78 @@ class TestAuditorAgent:
         assert report.status == AuditStatus.NEEDS_OUTREACH
         assert report.data_diagnosis == MissingDataDiagnosis.MISSING_TABLE_FIGURES_FOUND
 
+    def test_normalize_data_budget_full_supervision_synonyms(self, auditor):
+        """100%, full, all, not applicable, and N/A normalize to None, while partial budgets stay canonical."""
+        assert auditor.normalize_data_budget("100%") is None
+        assert auditor.normalize_data_budget("100% labeled") is None
+        assert auditor.normalize_data_budget("100% training data (24 samples)") is None
+        assert auditor.normalize_data_budget("fully supervised") is None
+        assert auditor.normalize_data_budget("full") is None
+        assert auditor.normalize_data_budget("Not Applicable") is None
+        assert auditor.normalize_data_budget("N/A") is None
+        assert auditor.normalize_data_budget(None) is None
+
+        assert auditor.normalize_data_budget("25% labeled") == "25%"
+        assert auditor.normalize_data_budget("5 shots") == "5-shot"
+        assert auditor.normalize_data_budget("1-shot") == "1-shot"
+
+    def test_sam_med2d_slice_inference_is_3d_override(self, auditor):
+        """2D/hybrid models evaluated on 3D volumetric scans (BTCV, AMOS) override is_3d=False -> True."""
+        data = ExtractedPaperData(
+            paper_title="SAM-Med2D",
+            proposed_model_id="SAM-Med2D",
+            screening=InclusionCriteriaCheck(
+                is_3d=False,
+                is_radiological=True,
+                is_public_dataset=True,
+                has_dice_metric=True,
+            ),
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", dice_score=0.920, modality="CT"),
+                RawExtractedScore(dataset_name="AMOS", organ_or_task="Spleen", dice_score=0.890, modality="MRI"),
+            ],
+        )
+        report = auditor.audit(data)
+        assert report.passed_inclusion_screening is True
+        assert data.screening.is_3d is True
+        assert report.status != AuditStatus.REJECTED
+
+    def test_consensus_iaa_metrics_multiprompt_and_2d_filtering(self, auditor):
+        """Checks paired/strict/exact IAA metrics, multi-prompt peak consolidation, and 2D photographic row filtering."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+        data_a = ExtractedPaperData(
+            paper_title="SAM-Med2D",
+            proposed_model_id="SAM-Med2D",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liv", prompt_type="1-point", dice_score=0.8200),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", prompt_type="bounding box", dice_score=0.9250),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Spleen", prompt_type="bounding box", dice_score=0.9100),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Pancreas", dice_score=0.7000),
+                RawExtractedScore(dataset_name="ISIC-2018", organ_or_task="Skin Lesion", modality="Dermoscopy", dice_score=0.8800),
+            ],
+        )
+        data_b = ExtractedPaperData(
+            paper_title="SAM-Med2D",
+            proposed_model_id="SAM-Med2D",
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Liver", prompt_type="bounding box", dice_score=0.9250),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Spleen", prompt_type="bounding box", dice_score=0.9050),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Pancreas", dice_score=0.7600),
+                RawExtractedScore(dataset_name="BTCV", organ_or_task="Aorta", dice_score=0.8900),
+            ],
+        )
+        rep = auditor.audit_consensus(data_a, data_b, tolerance=0.01)
+        # ISIC-2018 Dermoscopy excluded; Liver multi-prompt consolidated to 0.9250 peak
+        assert rep.concordant_organs_count == 2  # Liver (exact) + Spleen (delta=0.005)
+        assert rep.disputed_organs_count == 1    # Pancreas (0.70 vs 0.76)
+        assert rep.singleton_organs_count == 1   # Aorta (only B)
+        assert rep.paired_count == 3
+        assert rep.paired_concordance_rate == round(2 / 3, 4)
+        assert rep.strict_concordance_rate == round(2 / 4, 4)
+        assert rep.exact_concordance_rate == round(1 / 3, 4)
+        assert rep.inter_agent_mae is not None
+        assert rep.inter_agent_mae == rep.inter_model_dice_mae
+
 

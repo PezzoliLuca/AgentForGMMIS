@@ -424,6 +424,58 @@ class TestConsensusAuditor:
         assert report.dispute_count == 0
         assert report.concordance_rate == 1.0
 
+    def test_audit_consensus_validation_testing_splits_match_none(self, auditor):
+        """Standard evaluation split labels ('Validation', 'Testing') normalize to None so peer omissions pair cleanly."""
+        screening = InclusionCriteriaCheck(is_3d=True, is_radiological=True, is_public_dataset=True, has_dice_metric=True)
+
+        data_a = ExtractedPaperData(
+            paper_title="Swin UNETR: Swin Transformers for Semantic Segmentation of Brain Tumors in MRI Images",
+            proposed_model_id="Swin UNETR",
+            visual_backbone="Swin Transformer",
+            millions_of_parameters=61.98,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BraTS 2021", organ_or_task="Enhancing Tumor (ET)", dice_score=0.858, table_or_section_ref="Table 3", data_budget_or_setting="Validation"),
+                RawExtractedScore(dataset_name="BraTS 2021", organ_or_task="Whole Tumor (WT)", dice_score=0.926, table_or_section_ref="Table 3", data_budget_or_setting="Validation"),
+                RawExtractedScore(dataset_name="BraTS 2021", organ_or_task="Enhancing Tumor (ET)", dice_score=0.853, table_or_section_ref="Table 4", data_budget_or_setting="Testing"),
+            ],
+        )
+
+        data_b = ExtractedPaperData(
+            paper_title="Swin UNETR: Swin Transformers for Semantic Segmentation of Brain Tumors in MRI Images",
+            proposed_model_id="Swin UNETR",
+            visual_backbone="Swin Transformer",
+            millions_of_parameters=61.98,
+            screening=screening,
+            extracted_scores=[
+                RawExtractedScore(dataset_name="BraTS 2021", organ_or_task="Enhancing Tumor (ET)", dice_score=0.858, table_or_section_ref="Table 3", data_budget_or_setting=None),
+                RawExtractedScore(dataset_name="BraTS 2021", organ_or_task="Whole Tumor (WT)", dice_score=0.926, table_or_section_ref="Table 3", data_budget_or_setting=None),
+                RawExtractedScore(dataset_name="BraTS 2021", organ_or_task="Enhancing Tumor (ET)", dice_score=0.853, table_or_section_ref="Table 4", data_budget_or_setting=None),
+            ],
+        )
+
+        report = auditor.audit_consensus(data_a, data_b)
+
+        assert report.paired_count == 3
+        assert report.concordant_count == 3
+        assert report.dispute_count == 0
+        assert report.concordance_rate == 1.0
+
+    def test_db_manager_nonexistent_dataset_column_safe(self):
+        """get_dataset_statistics and get_leaderboard_for_dataset must return None/[] cleanly when column does not exist."""
+        from agent_gmmis.data.db_manager import DatabaseManager, ScoreCategory
+
+        db = DatabaseManager()
+        assert db.get_dataset_statistics("CrossMoDA", category=ScoreCategory.BEST) is None
+        assert db.get_leaderboard_for_dataset("CrossMoDA", category=ScoreCategory.BEST) == []
+
+    def test_reinterrogation_score_response_non_numeric_safe(self):
+        """Non-numeric string leaked into dice_score must return None instead of crashing float()."""
+        from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+
+        resp = ReinterrogationScoreResponse(dataset_name="CrossMoDA", organ_or_task="Overall", dice_score="CrossMoDA")
+        assert resp.dice_score is None
+
 
 class TestDualExtractionDeliberation:
     """Verifies double-blind multi-round deliberation between ExtractionAgent instances."""
@@ -784,8 +836,8 @@ class TestDualExtractionDeliberation:
         assert consensus_report.confidence_score >= 0.95
 
     def test_granularity_reinterrogation_resolves_macro_score(self, auditor):
-        """Verifies that when an agent extracts individual organs, deliberation re-interrogates to obtain Overall macro-average."""
-        from agent_gmmis.extraction.schemas import ReinterrogationScoreResponse
+        """Verifies that when one agent extracts Overall and the peer has per-organ scores, inverted deliberation recovers organs on the coarse agent."""
+        from agent_gmmis.extraction.schemas import ReinterrogationOrganBreakdownResponse
 
         screening = InclusionCriteriaCheck(
             is_3d=True,
@@ -794,7 +846,7 @@ class TestDualExtractionDeliberation:
             has_dice_metric=True,
         )
 
-        # Agent A extracted 3 individual organs for BTCV but no Overall
+        # Agent A extracted 3 individual organs for BTCV
         data_a = ExtractedPaperData(
             proposed_model_id="IMIS-Net",
             paper_title="Interactive Medical Image Segmentation",
@@ -808,7 +860,7 @@ class TestDualExtractionDeliberation:
             ],
         )
 
-        # Agent B extracted the Overall mean score
+        # Agent B extracted only the Overall mean score
         data_b = ExtractedPaperData(
             proposed_model_id="IMIS-Net",
             paper_title="Interactive Medical Image Segmentation",
@@ -825,14 +877,17 @@ class TestDualExtractionDeliberation:
         agent_a.process_manuscript = lambda m: data_a
         agent_b.process_manuscript = lambda m: data_b
 
-        # Granularity re-interrogation returns the Macro-Average score for Agent A
-        agent_a.reinterrogate_granularity_macro = lambda m, ds, o, mod: ReinterrogationScoreResponse(
+        # Inverted granularity re-interrogation recovers per-organ breakdown for Agent B
+        agent_b.reinterrogate_organ_breakdown = lambda m, ds, target_organs, mod: ReinterrogationOrganBreakdownResponse(
             dataset_name=ds,
-            organ_or_task="Overall",
-            is_valid_benchmark=True,
-            dice_score=0.9100,
-            table_or_section_ref="Table 1 Mean Row",
-            rationale="Identified explicit Mean DSC row in Table 1",
+            organ_scores=[
+                RawExtractedScore(dataset_name=ds, organ_or_task="Liver", dice_score=0.9400),
+                RawExtractedScore(dataset_name=ds, organ_or_task="Spleen", dice_score=0.9100),
+                RawExtractedScore(dataset_name=ds, organ_or_task="Kidney", dice_score=0.8800),
+            ],
+            table_or_section_ref="Table 1",
+            only_macro_average_reported=False,
+            rationale="Located per-organ columns for Liver, Spleen, and Kidney in Table 1.",
         )
 
         coordinator = DualExtractionCoordinator(agent_a=agent_a, agent_b=agent_b)
@@ -845,14 +900,12 @@ class TestDualExtractionDeliberation:
             verbose=False,
         )
 
-        # Agent A should now have an Overall score matching Agent B
-        overall_scores_a = [s for s in ext_a.extracted_scores if s.organ_or_task == "Overall" and s.dataset_name == "BTCV"]
-        assert len(overall_scores_a) == 1
-        assert overall_scores_a[0].dice_score == 0.9100
+        # Agent B should now have recovered Liver, Spleen, and Kidney
+        organs_b = {s.organ_or_task for s in ext_b.extracted_scores if s.dataset_name == "BTCV" and s.organ_or_task != "Overall"}
+        assert {"Liver", "Spleen", "Kidney"}.issubset(organs_b)
 
-        # Consensus report should show concordant Overall score and zero disputes
-        concordant_btcv = [cs for cs in final_report.consensus_scores if cs.canonical_dataset_name.lower() == "btcv" and cs.status == ConsensusStatus.CONCORDANT]
-        assert len(concordant_btcv) >= 1
+        # Consensus report should show all 3 specific organs concordant and zero disputes
+        assert final_report.concordant_count == 3
         assert final_report.dispute_count == 0
 
     def test_normalize_data_budget_matching(self, auditor):

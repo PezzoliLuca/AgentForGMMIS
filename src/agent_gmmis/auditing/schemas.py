@@ -215,13 +215,32 @@ class ConsensusAuditReport(BaseModel):
         None,
         description="Mean absolute difference across paired benchmark scores between Model A and Model B.",
     )
+    inter_agent_mae: Optional[float] = Field(
+        None,
+        description="Alias of inter_model_dice_mae for standardized IAA reporting.",
+    )
     concordance_rate: float = Field(
         0.0,
         description="Percentage of common benchmarks that are concordant within tolerance.",
     )
+    paired_concordance_rate: float = Field(
+        0.0,
+        description="Strict Paired IAA: concordant / paired (in [0.0, 1.0]).",
+    )
+    strict_concordance_rate: float = Field(
+        0.0,
+        description="Strict Total IAA across all extracted items: concordant / (concordant + disputed + singleton).",
+    )
+    exact_concordance_rate: float = Field(
+        0.0,
+        description="Fraction of paired scores matching within <= 0.001 Dice tolerance.",
+    )
     concordant_count: int = 0
     dispute_count: int = 0
     unconfirmed_count: int = 0
+    concordant_organs_count: int = 0
+    disputed_organs_count: int = 0
+    singleton_organs_count: int = 0
     paired_count: int = 0
     total_unique_benchmarks: int = 0
     audit_report_a: AuditReport

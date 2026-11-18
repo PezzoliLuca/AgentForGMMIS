@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from agent_gmmis.data.db_manager import DatabaseManager
-from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver
+from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver, OrganAliasResolver
 from agent_gmmis.extraction.schemas import ExtractedPaperData, RawExtractedScore
 
 
@@ -107,51 +107,80 @@ class ExtractionEvaluator:
     def _select_candidate_score(
         self, scores_list: List[RawExtractedScore], compare_source: str = "primary"
     ) -> Tuple[float, str]:
-        """Deterministically selects or macro-averages candidate scores without peeking at GT."""
+        """Deterministically selects Dataset-Level or computes per-organ mean bridge without peeking at GT."""
         if not scores_list:
             return 0.0, "N/A"
         if len(scores_list) == 1:
             s = scores_list[0]
             return s.dice_score or 0.0, s.prompt_type or "N/A"
 
-        # 1. Prefer overall average/mean row if table reports individual organs/classes + average
         avg_candidates = [
             s for s in scores_list
-            if s.organ_or_task and any(
-                k in s.organ_or_task.lower()
-                for k in ("average", "mean", "overall", "all organs", "all classes", "mdice", "total")
-            )
+            if s.dice_score is not None and OrganAliasResolver.is_dataset_level(s.organ_or_task)
+        ]
+        organ_candidates = [
+            s for s in scores_list
+            if s.dice_score is not None and not OrganAliasResolver.is_dataset_level(s.organ_or_task)
         ]
 
-        if avg_candidates:
+        # 1. If Dataset-Level macro-average rows exist (without overriding multi-organ breakdowns)
+        if avg_candidates and len(organ_candidates) < 2:
             if compare_source == "best":
                 selected = max(avg_candidates, key=lambda s: s.dice_score if s.dice_score is not None else -1.0)
                 return selected.dice_score or 0.0, selected.prompt_type or "Peak Overall Macro-Average"
-            else:
-                one_click = [
-                    s for s in avg_candidates
-                    if s.prompt_type and any(p in s.prompt_type.lower() for p in ("1 point", "1 click", "1-point", "1-click"))
-                ]
-                if one_click:
-                    selected = one_click[0]
-                    return selected.dice_score or 0.0, selected.prompt_type or "1-Point Prompt"
+            one_click = [
+                s for s in avg_candidates
+                if s.prompt_type and any(p in s.prompt_type.lower() for p in ("1 point", "1 click", "1-point", "1-click"))
+            ]
+            if one_click:
+                selected = one_click[0]
+                return selected.dice_score or 0.0, selected.prompt_type or "1-Point Prompt"
+            selected = max(avg_candidates, key=lambda s: s.dice_score if s.dice_score is not None else -1.0)
+            return selected.dice_score or 0.0, selected.prompt_type or "Overall Macro-Average"
+
+        # 2. Deterministic mean bridge across canonicalized per-organ scores grouped by (prompt_type, budget)
+        if organ_candidates:
+            # Group by normalized (prompt_type, data_budget) when multiple organs share settings
+            setting_groups: Dict[Tuple[str, str], Dict[str, List[float]]] = {}
+            for s in organ_candidates:
+                pt = (s.prompt_type or "default").strip().lower()
+                bgt = (s.data_budget_or_setting or "full").strip().lower()
+                canon_org = OrganAliasResolver.resolve(s.organ_or_task)
+                setting_groups.setdefault((pt, bgt), {}).setdefault(canon_org, []).append(s.dice_score)
+
+            # Pick optimal setting group with >=2 organs if available, else aggregate across all canonical organs
+            multi_organ_groups = {k: v for k, v in setting_groups.items() if len(v) >= 2}
+            if multi_organ_groups:
+                if compare_source == "primary":
+                    one_click_groups = {
+                        k: v for k, v in multi_organ_groups.items()
+                        if any(p in k[0] for p in ("1 point", "1 click", "1-point", "1-click"))
+                    }
+                    pool = one_click_groups or multi_organ_groups
                 else:
-                    selected = max(avg_candidates, key=lambda s: s.dice_score if s.dice_score is not None else -1.0)
-                    return selected.dice_score or 0.0, selected.prompt_type or "Overall Macro-Average"
+                    pool = multi_organ_groups
 
-        # 2. Macro-average across unique reported organs/tasks
-        organ_map: Dict[str, List[float]] = {}
-        for s in scores_list:
-            if s.dice_score is not None:
-                organ_key = (s.organ_or_task or "default").strip().lower()
-                organ_map.setdefault(organ_key, []).append(s.dice_score)
+                best_key, best_org_map = max(
+                    pool.items(),
+                    key=lambda kv: (len(kv[1]), sum(max(vs) for vs in kv[1].values()) / len(kv[1])),
+                )
+                organ_vals = [max(vs) if compare_source == "best" else (sum(vs) / len(vs)) for vs in best_org_map.values()]
+                pred_dice = round(sum(organ_vals) / len(organ_vals), 4)
+                return pred_dice, f"Deterministic mean of {len(best_org_map)} organs ({best_key[0]})"
 
-        organ_vals = [
-            max(vals) if compare_source == "best" else (sum(vals) / len(vals))
-            for vals in organ_map.values()
-        ]
-        pred_dice = sum(organ_vals) / len(organ_vals) if organ_vals else 0.0
-        return pred_dice, f"Macro-average of {len(organ_map)} reported organs/splits"
+            # Fallback across all canonical organs when organs span mixed prompt labels
+            organ_map: Dict[str, List[float]] = {}
+            for s in organ_candidates:
+                canon_org = OrganAliasResolver.resolve(s.organ_or_task)
+                organ_map.setdefault(canon_org, []).append(s.dice_score)
+            organ_vals = [max(vs) if compare_source == "best" else (sum(vs) / len(vs)) for vs in organ_map.values()]
+            pred_dice = round(sum(organ_vals) / len(organ_vals), 4) if organ_vals else 0.0
+            return pred_dice, f"Macro-average of {len(organ_map)} reported organs"
+
+        if avg_candidates:
+            selected = max(avg_candidates, key=lambda s: s.dice_score if s.dice_score is not None else -1.0)
+            return selected.dice_score or 0.0, selected.prompt_type or "Overall Macro-Average"
+        return 0.0, "N/A"
 
     def evaluate(
         self,

@@ -1,8 +1,36 @@
 """Pydantic schemas specifically designed for paper extraction and LLM structured outputs."""
 
-from typing import List, Optional
+import re
+from typing import Any, List, Optional
 from pydantic import BaseModel, Field, field_validator
 from agent_gmmis.data.models import InclusionCriteriaCheck
+
+
+def _parse_and_normalize_dice_score(v: Any) -> Optional[float]:
+    """Safely parses a raw Dice score (float or numeric string in [0, 1] or [0, 100]) to [0.0, 1.0]."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        s = v.strip().lower()
+        if not s or any(phrase in s for phrase in ("not", "n/a", "none", "null", "unknown", "-")):
+            return None
+        m = re.search(r"[-+]?\d*\.?\d+", s)
+        if m:
+            try:
+                v = float(m.group(0))
+            except ValueError:
+                return None
+        else:
+            return None
+    try:
+        val = float(v)
+    except (ValueError, TypeError):
+        return None
+    if val > 1.0 and val <= 100.0:
+        val = val / 100.0
+    if val < 0.0 or val > 1.0:
+        raise ValueError(f"Dice score must be in range [0.0, 1.0], got {val}")
+    return round(val, 4)
 
 
 class ExtractionThoughtProcess(BaseModel):
@@ -34,7 +62,11 @@ class RawExtractedScore(BaseModel):
     """A raw evaluation score extracted directly from paper text or tables."""
 
     dataset_name: str = Field(..., description="Name of dataset as mentioned in the paper (e.g. BraTS, BTCV, AMOS)")
-    organ_or_task: str = Field(..., description="Target anatomy or lesion (e.g. Liver, Brain Tumor, Multi-organ mean)")
+    organ_or_task: str = Field(..., description="Specific target organ, lesion, or sub-region (e.g. Liver, Spleen, Whole Tumor (WT), Enhancing Tumor (ET)), or 'Overall' if only macro-average is reported.")
+    modality: Optional[str] = Field(
+        None,
+        description="Imaging modality evaluated (e.g. CT, MRI, PET, CBCT, MRA, or 2D domain label)",
+    )
     derivation_rationale: Optional[str] = Field(
         None,
         description="Step-by-step reasoning explaining which table, row, column, prompt, or setting this exact score was derived from",
@@ -84,30 +116,7 @@ class RawExtractedScore(BaseModel):
     @field_validator("dice_score", mode="before")
     @classmethod
     def normalize_score(cls, v) -> Optional[float]:
-        if v is None:
-            return None
-        if isinstance(v, str):
-            s = v.strip().lower()
-            if not s or any(phrase in s for phrase in ("not", "n/a", "none", "null", "unknown", "-")):
-                return None
-            import re
-            m = re.search(r"[-+]?\d*\.?\d+", s)
-            if m:
-                try:
-                    v = float(m.group(0))
-                except ValueError:
-                    return None
-            else:
-                return None
-        try:
-            val = float(v)
-        except (ValueError, TypeError):
-            return None
-        if val > 1.0 and val <= 100.0:
-            val = val / 100.0
-        if val < 0.0 or val > 1.0:
-            raise ValueError(f"Dice score must be in range [0.0, 1.0], got {val}")
-        return round(val, 4)
+        return _parse_and_normalize_dice_score(v)
 
 
 class ExtractedPaperData(BaseModel):
@@ -233,14 +242,26 @@ class ReinterrogationScoreResponse(BaseModel):
     @field_validator("dice_score", mode="before")
     @classmethod
     def normalize_score(cls, v: Optional[float]) -> Optional[float]:
-        if v is None:
-            return None
-        val = float(v)
-        if val > 1.0 and val <= 100.0:
-            val = val / 100.0
-        if val < 0.0 or val > 1.0:
-            raise ValueError(f"Dice score must be in range [0.0, 1.0], got {val}")
-        return round(val, 4)
+        return _parse_and_normalize_dice_score(v)
+
+
+class ReinterrogationOrganBreakdownResponse(BaseModel):
+    """Structured response for double-blind deliberation requesting missing per-organ breakdown scores."""
+
+    dataset_name: str = Field(..., description="Canonical or raw dataset name evaluated")
+    organ_scores: List[RawExtractedScore] = Field(
+        default_factory=list,
+        description="List of individual organ/sub-task Dice scores found for the proposed model on this dataset",
+    )
+    table_or_section_ref: Optional[str] = Field(None, description="Source table or section reference in the manuscript")
+    only_macro_average_reported: bool = Field(
+        False,
+        description="True ONLY if the paper exclusively reports an aggregated mean and no per-organ scores exist anywhere",
+    )
+    rationale: str = Field(
+        "Evaluated from manuscript tables and text",
+        description="Concise explanation grounded in manuscript text/tables",
+    )
 
 
 class DeliberationRoundSummary(BaseModel):
@@ -260,4 +281,10 @@ class DeliberationRoundSummary(BaseModel):
     resolved_count: int
     stalled: bool = False
     details: List[str] = Field(default_factory=list)
+
+
+# Backward / specification compatibility aliases
+PerformanceScore = RawExtractedScore
+ExtractionResult = ExtractedPaperData
+
 

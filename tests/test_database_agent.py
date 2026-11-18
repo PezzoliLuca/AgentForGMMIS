@@ -400,17 +400,23 @@ def test_single_agent_audit_report_curation(database_agent: DatabaseAgent, db_ma
 
     plan = database_agent.plan_curation(report)
     assert plan.model_id == "SingleAgentTester-3D"
-    assert len(plan.score_diffs) == 1
-    assert plan.score_diffs[0].dataset_name == "BraTS"
-    assert plan.score_diffs[0].new_score == 91.0
-    assert plan.score_diffs[0].consensus_status == "single_agent_unconfirmed"
+    assert len(plan.score_diffs) == 2
+    assert any(d.target_table == "results_organ_scores" and d.organ_name == "Dataset-Level" for d in plan.score_diffs)
+    best_diffs = [d for d in plan.score_diffs if d.target_table == "results_best"]
+    assert len(best_diffs) == 1
+    assert best_diffs[0].dataset_name == "BraTS"
+    assert best_diffs[0].new_score == 91.0
+    assert best_diffs[0].consensus_status == "single_agent_unconfirmed"
     assert plan.can_commit is True
 
-    # Commit and verify in SQLite
+    # Commit and verify in SQLite (both wide table and results_organ_scores)
     res = database_agent.curate(report, dry_run=False)
     assert res.committed is True
     assert db_manager.get_model("SingleAgentTester-3D") is not None
     assert db_manager.get_score_raw("SingleAgentTester-3D", "BraTS", "results_best") == 91.0
+    org_rows = db_manager.get_organ_scores_for_model("SingleAgentTester-3D", "BraTS")
+    assert len(org_rows) == 1
+    assert org_rows[0]["dice_score"] == 91.0
 
 
 # ----------------------------------------------------------------------
@@ -504,8 +510,8 @@ def test_unicode_nfkc_and_generic_model_id_resolution(database_agent: DatabaseAg
     assert plan_generic.model_id == "Cheap Lunch SAM"
 
 
-def test_pre_update_deduplication_single_update_per_cell(database_agent: DatabaseAgent):
-    """Verifies that multiple scores for the same dataset generate at most one UPDATE query with Overall peak."""
+def test_pre_update_deduplication_single_update_per_cell(database_agent: DatabaseAgent, db_manager: DatabaseManager):
+    """Verifies granular per-organ persistence in results_organ_scores and deterministic mean bridge to results_best."""
     organ1 = ConsensusScore(
         dataset_name="BTCV",
         canonical_dataset_name="BTCV",
@@ -540,9 +546,73 @@ def test_pre_update_deduplication_single_update_per_cell(database_agent: Databas
     plan = database_agent.plan_curation(report)
     sql_text = "\n".join(plan.generated_sql)
 
-    # Exactly one UPDATE to results_best for BTCV
+    # Exactly one UPDATE to results_best for BTCV using deterministic mean of Liver (91.0) & Spleen (93.0) = 92.0
     best_updates = [line for line in sql_text.splitlines() if 'UPDATE "results_best" SET "BTCV"' in line]
     assert len(best_updates) == 1
-    # Overall score (88.0%) should be preferred over organ scores
-    assert "88.0" in best_updates[0]
+    assert "92.0" in best_updates[0]
+
+    # Commit and verify results_organ_scores stores Liver & Spleen (NOT Overall/Dataset-Level)
+    res = database_agent.curate(report, dry_run=False)
+    assert res.committed is True
+    org_rows = db_manager.get_organ_scores_for_model("BTCVDedupTester", "BTCV")
+    assert {r["organ_name"]: r["dice_score"] for r in org_rows} == {"Liver": 91.0, "Spleen": 93.0}
+
+
+def test_db_manager_organ_scores_monotonic_upsert(db_manager: DatabaseManager):
+    """DatabaseManager.upsert_organ_score enforces monotonic peak improvement per (model, dataset, organ)."""
+    db_manager.upsert_organ_score("SAM-Med2D", "BTCV", "Liver", 0.91, prompt_type="1-point", source_paper="Paper1")
+    db_manager.upsert_organ_score("SAM-Med2D", "BTCV", "Liver", 0.85, prompt_type="auto", source_paper="Paper1")
+    rows = db_manager.get_organ_scores_for_model("SAM-Med2D", "BTCV")
+    assert len(rows) == 1
+    assert rows[0]["dice_score"] == 91.0
+
+    db_manager.upsert_organ_score("SAM-Med2D", "BTCV", "Liver", 0.945, prompt_type="bbox", source_paper="Paper1")
+    rows_updated = db_manager.get_organ_scores_for_model("SAM-Med2D", "BTCV")
+    assert rows_updated[0]["dice_score"] == 94.5
+    assert rows_updated[0]["prompt_type"] == "bbox"
+
+
+def test_database_agent_granular_epistemic_gating(database_agent: DatabaseAgent, db_manager: DatabaseManager):
+    """Disputed and low-confidence organs are blocked from results_organ_scores while concordant organs persist."""
+    liver_conc = ConsensusScore(
+        dataset_name="BTCV",
+        canonical_dataset_name="BTCV",
+        organ_or_task="Liver",
+        status=ConsensusStatus.CONCORDANT,
+        score_a=0.92,
+        score_b=0.92,
+        resolved_score=0.92,
+    )
+    pancreas_disp = ConsensusScore(
+        dataset_name="BTCV",
+        canonical_dataset_name="BTCV",
+        organ_or_task="Pancreas",
+        status=ConsensusStatus.DISPUTED,
+        score_a=0.72,
+        score_b=0.81,
+        resolved_score=None,
+    )
+    spleen_unconf = ConsensusScore(
+        dataset_name="BTCV",
+        canonical_dataset_name="BTCV",
+        organ_or_task="Spleen",
+        status=ConsensusStatus.SINGLE_AGENT_UNCONFIRMED,
+        score_a=0.89,
+        score_b=None,
+        resolved_score=0.89,
+    )
+    report = make_dummy_consensus_report(
+        model_id="GatedOrganTester",
+        scores=[liver_conc, pancreas_disp, spleen_unconf],
+        confidence=0.70,  # Below single_agent_min_conf=0.85
+    )
+    res = database_agent.curate(report, dry_run=False)
+    assert res.committed is True
+
+    # Only concordant Liver should persist to results_organ_scores
+    rows = db_manager.get_organ_scores_for_model("GatedOrganTester", "BTCV")
+    assert {r["organ_name"]: r["dice_score"] for r in rows} == {"Liver": 92.0}
+    assert db_manager.get_score_raw("GatedOrganTester", "BTCV", "results_best") == 92.0
+    assert any(d.action == CurationActionType.SKIP_DISPUTED_SCORE and d.organ_name == "Pancreas" for d in res.plan.score_diffs)
+    assert any(d.action == CurationActionType.SKIP_LOW_CONFIDENCE and d.organ_name == "Spleen" for d in res.plan.score_diffs)
 

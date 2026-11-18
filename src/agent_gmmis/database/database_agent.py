@@ -21,7 +21,7 @@ from agent_gmmis.database.schemas import (
     DatasetSchemaChange,
     ScoreCurationDiff,
 )
-from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver
+from agent_gmmis.extraction.alias_resolver import DatasetAliasResolver, OrganAliasResolver
 
 
 class DatabaseAgent:
@@ -95,6 +95,7 @@ class DatabaseAgent:
         self.default_source_ref = default_source_ref
         self.alias_resolver = DatasetAliasResolver(db_manager)
         self.db.init_curation_history_table()
+        self.db.init_organ_scores_table()
 
     # ------------------------------------------------------------------
     # Public API
@@ -181,16 +182,24 @@ class DatabaseAgent:
                 continue
 
             # B. Public Benchmark Schema Evolution
-            # Schema evolution can ONLY occur if:
-            # 1. Dataset is not private
-            # 2. Status is CONCORDANT / AGREEMENT
-            # 3. Name is a valid public benchmark (not organ/modality/placeholder)
-            is_concordant = item.get("status") in (
+            # Schema evolution can ONLY occur if at least one item for this dataset is CONCORDANT
+            # and the canonical name is a valid public benchmark
+            organ_bkd = item.get("organ_breakdown") or [item]
+            has_any_concordant = any(
+                x.get("status") in (
+                    ConsensusStatus.CONCORDANT.value,
+                    "concordant",
+                    "agreement",
+                    "discrepancy_resolved",
+                )
+                for x in organ_bkd
+            ) or item.get("status") in (
                 ConsensusStatus.CONCORDANT.value,
                 "concordant",
                 "agreement",
                 "discrepancy_resolved",
             )
+            is_concordant = has_any_concordant
             is_valid_name = self._is_valid_new_benchmark_name(canonical_name)
 
             if canonical_name not in existing_best_cols:
@@ -466,9 +475,10 @@ class DatabaseAgent:
 
     def _deduplicate_score_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Groups score items by canonical_name and selects the single most representative item
-        per dataset to avoid duplicate or conflicting UPDATE statements on the same cell.
-        Prefers Overall / Macro rows, then highest concordant score (peak), resolving organ sub-scores.
+        Groups score items by canonical_name, canonicalizes organs via OrganAliasResolver,
+        discards redundant 'Dataset-Level' rows when granular per-organ scores exist,
+        deduplicates by (canonical_dataset, canonical_organ) taking peak score, and attaches
+        per-organ breakdown + deterministic macro-mean bridge for wide-table results_best.
         """
         if not items:
             return []
@@ -480,44 +490,58 @@ class DatabaseAgent:
             canon = self._clean_str(item.get("canonical_name") or resolved or raw_name)
             grouped.setdefault(canon, []).append(item)
 
+        def _is_concordant_status(st: Any) -> int:
+            return 1 if st in (ConsensusStatus.CONCORDANT.value, "concordant", "agreement", "discrepancy_resolved") else 0
+
         deduped: List[Dict[str, Any]] = []
         for canon, group in grouped.items():
-            if len(group) == 1:
-                deduped.append(group[0])
-                continue
+            # Canonicalize organ names across group
+            normalized_group: List[Dict[str, Any]] = []
+            for x in group:
+                xc = dict(x)
+                xc["organ_or_task"] = OrganAliasResolver.resolve(x.get("organ_or_task"))
+                normalized_group.append(xc)
 
-            # Check if any overall/macro row exists
-            overall_rows = [
-                x for x in group
-                if self._clean_str(x.get("organ_or_task", "")).lower() in (
-                    "overall", "average", "mean", "macro", "macro-average", "all", "total"
-                )
+            specific_rows = [
+                x for x in normalized_group
+                if not OrganAliasResolver.is_dataset_level(x.get("organ_or_task"))
             ]
+            # Granularity mandate: if granular per-organ scores exist, discard Dataset-Level overall row
+            working_rows = specific_rows if specific_rows else normalized_group
 
-            if overall_rows:
-                # Prefer concordant overall rows, then pick peak score
-                rep = max(
-                    overall_rows,
-                    key=lambda x: (
-                        1 if x.get("status") in (ConsensusStatus.CONCORDANT.value, "concordant", "agreement") else 0,
-                        float(x.get("score") or 0.0),
-                    ),
-                )
-                rep = dict(rep)
-            else:
-                # Multiple sub-organ scores: calculate macro mean
-                numeric_scores = [float(x["score"]) for x in group if x.get("score") is not None]
-                if numeric_scores:
-                    macro_val = round(sum(numeric_scores) / len(numeric_scores), 4)
-                    rep = dict(group[0])
-                    rep["organ_or_task"] = "Overall"
-                    rep["score"] = macro_val
-                    rep["notes"] = f"Synthesized macro mean from {len(numeric_scores)} organ sub-scores"
+            # Deduplicate per canonical organ keeping peak score (preferring concordant rows)
+            by_organ: Dict[str, Dict[str, Any]] = {}
+            for x in working_rows:
+                org = x["organ_or_task"]
+                if org not in by_organ:
+                    by_organ[org] = x
                 else:
-                    rep = dict(group[0])
+                    cur = by_organ[org]
+                    cand_key = (_is_concordant_status(x.get("status")), float(x.get("score") or -1.0))
+                    cur_key = (_is_concordant_status(cur.get("status")), float(cur.get("score") or -1.0))
+                    if cand_key > cur_key:
+                        by_organ[org] = x
 
-            # Check if there is an explicit primary baseline candidate in the group
-            primary_cands = [x for x in group if self._is_primary_setting(x.get("prompt_type", ""))]
+            organ_breakdown = list(by_organ.values())
+
+            if specific_rows:
+                concordant_specific = [x for x in organ_breakdown if _is_concordant_status(x.get("status")) and x.get("score") is not None]
+                numeric_pool = concordant_specific if concordant_specific else [x for x in organ_breakdown if x.get("score") is not None]
+                rep = dict(numeric_pool[0] if numeric_pool else organ_breakdown[0])
+                rep["organ_or_task"] = "Dataset-Level"
+                if numeric_pool:
+                    macro_val = round(sum(float(x["score"]) for x in numeric_pool) / len(numeric_pool), 4)
+                    rep["score"] = macro_val
+                    rep["notes"] = f"Deterministic arithmetic mean from {len(numeric_pool)} per-organ scores"
+                rep["has_specific_organs"] = True
+                rep["organ_breakdown"] = organ_breakdown
+            else:
+                rep = dict(organ_breakdown[0])
+                rep["has_specific_organs"] = False
+                rep["organ_breakdown"] = organ_breakdown
+
+            # Preserve primary baseline candidate if present across raw group
+            primary_cands = [x for x in normalized_group if self._is_primary_setting(x.get("prompt_type", "")) and x.get("score") is not None]
             if primary_cands:
                 best_prim = max(primary_cands, key=lambda x: float(x.get("score") or 0.0))
                 rep["primary_score"] = best_prim.get("score")
@@ -584,13 +608,14 @@ class DatabaseAgent:
                 items.append({
                     "dataset_name": cs.dataset_name,
                     "canonical_name": cs.canonical_dataset_name,
-                    "organ_or_task": cs.organ_or_task,
+                    "organ_or_task": OrganAliasResolver.resolve(cs.organ_or_task),
                     "status": cs.status.value if hasattr(cs.status, "value") else str(cs.status),
                     "score": score_val,
                     "score_a": cs.score_a,
                     "score_b": cs.score_b,
                     "delta": cs.delta,
                     "prompt_type": cs.prompt_type,
+                    "data_budget": cs.data_budget_or_setting,
                     "table_ref": cs.table_ref_a or cs.table_ref_b,
                     "notes": cs.notes or "",
                 })
@@ -602,18 +627,53 @@ class DatabaseAgent:
                     items.append({
                         "dataset_name": s.dataset_name,
                         "canonical_name": canon_name or s.dataset_name,
-                        "organ_or_task": s.organ_or_task or "Overall",
+                        "organ_or_task": OrganAliasResolver.resolve(s.organ_or_task),
                         "status": "single_agent_unconfirmed",
                         "score": s.dice_score,
                         "score_a": s.dice_score,
                         "score_b": None,
                         "delta": None,
                         "prompt_type": s.prompt_type,
+                        "data_budget": s.data_budget_or_setting,
                         "table_ref": s.table_or_section_ref,
                         "notes": s.notes or "",
                     })
 
         return items
+
+    def _generate_organ_upsert_sql(
+        self,
+        model_id: str,
+        dataset_name: str,
+        organ_name: str,
+        score_pct: float,
+        prompt_type: Optional[str],
+        data_budget: Optional[str],
+        is_verified: bool,
+        source_ref: Optional[str],
+    ) -> str:
+        """Generates an idempotent monotonic peak UPSERT statement into results_organ_scores."""
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        esc_id = self._escape_sql(model_id)
+        esc_ds = self._escape_sql(dataset_name)
+        esc_org = self._escape_sql(organ_name)
+        pt_sql = f"'{self._escape_sql(prompt_type)}'" if prompt_type else "NULL"
+        bgt_sql = f"'{self._escape_sql(data_budget)}'" if data_budget else "NULL"
+        src_sql = f"'{self._escape_sql(source_ref)}'" if source_ref else "NULL"
+        verified_int = 1 if is_verified else 0
+        return (
+            'INSERT INTO "results_organ_scores" '
+            '(model_id, dataset_name, organ_name, dice_score, prompt_type, data_budget, is_verified, source_paper, updated_at) '
+            f"VALUES ('{esc_id}', '{esc_ds}', '{esc_org}', {score_pct}, {pt_sql}, {bgt_sql}, {verified_int}, {src_sql}, '{now_iso}') "
+            "ON CONFLICT(model_id, dataset_name, organ_name) DO UPDATE SET "
+            "dice_score = excluded.dice_score, "
+            "prompt_type = excluded.prompt_type, "
+            "data_budget = excluded.data_budget, "
+            "is_verified = excluded.is_verified, "
+            "source_paper = excluded.source_paper, "
+            "updated_at = excluded.updated_at "
+            "WHERE excluded.dice_score > results_organ_scores.dice_score;"
+        )
 
     def _evaluate_and_generate_score_sql(
         self,
@@ -627,13 +687,16 @@ class DatabaseAgent:
     ) -> List[ScoreCurationDiff]:
         """
         Applies epistemic policies (Concordant, Single-Agent Gated, Disputed)
-        and monotonic peak improvement rules to generate score SQL.
+        and monotonic peak improvement rules to persist granular per-organ scores
+        (results_organ_scores) as well as wide-table dataset summaries (results_best).
         """
         diffs = []
         status = item.get("status", ConsensusStatus.CONCORDANT.value)
         raw_score = item.get("score")
         table_ref = item.get("table_ref") or "Manuscript Table"
         prompt_type = item.get("prompt_type") or "Standard"
+        has_specific_organs = bool(item.get("has_specific_organs"))
+        organ_breakdown = item.get("organ_breakdown") or [item]
 
         # Safe escape
         esc_id = self._escape_sql(model_id)
@@ -641,53 +704,155 @@ class DatabaseAgent:
         esc_col = self._escape_ident(canonical_name)
 
         # -------------------------------------------------------------
-        # POLICY 1: DISPUTED SCORES
+        # POLICY 0: GRANULAR PER-ORGAN PERSISTENCE (results_organ_scores)
         # -------------------------------------------------------------
-        if status == ConsensusStatus.DISPUTED.value:
-            comment_text = (
-                f"[DISPUTE BLOCKED] Model A: {item.get('score_a')} vs Model B: {item.get('score_b')} "
-                f"(Δ={item.get('delta')}); Ref: {table_ref}"
-            )
-            esc_comment = self._escape_sql(comment_text)
-            sql = f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+        accepted_org_pcts: List[float] = []
+        for org_item in organ_breakdown:
+            canon_org = OrganAliasResolver.resolve(org_item.get("organ_or_task"))
+            org_status = org_item.get("status", status)
+            org_raw_score = org_item.get("score")
+            org_table_ref = org_item.get("table_ref") or table_ref
+            org_prompt = org_item.get("prompt_type") or item.get("prompt_type")
+            org_budget = org_item.get("data_budget") or item.get("data_budget")
 
+            if org_status == ConsensusStatus.DISPUTED.value:
+                if has_specific_organs:
+                    diffs.append(ScoreCurationDiff(
+                        dataset_name=canonical_name,
+                        organ_name=canon_org,
+                        target_table="results_organ_scores",
+                        action=CurationActionType.SKIP_DISPUTED_SCORE,
+                        consensus_status=org_status,
+                        comment=(
+                            f"[DISPUTE BLOCKED ({canon_org})] Model A: {org_item.get('score_a')} vs "
+                            f"Model B: {org_item.get('score_b')}; Ref: {org_table_ref}"
+                        ),
+                    ))
+                continue
+
+            if org_status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED.value and audit_confidence < self.single_agent_min_conf:
+                if has_specific_organs:
+                    diffs.append(ScoreCurationDiff(
+                        dataset_name=canonical_name,
+                        organ_name=canon_org,
+                        target_table="results_organ_scores",
+                        action=CurationActionType.SKIP_LOW_CONFIDENCE,
+                        consensus_status=org_status,
+                        comment=(
+                            f"[UNCONFIRMED OMITTED ({canon_org}, conf={audit_confidence:.2f} < "
+                            f"{self.single_agent_min_conf:.2f})] Score: {org_raw_score}; Ref: {org_table_ref}"
+                        ),
+                    ))
+                continue
+
+            if org_raw_score is None:
+                continue
+
+            org_pct = round(float(org_raw_score) * 100.0, 2) if float(org_raw_score) <= 1.0 else round(float(org_raw_score), 2)
+            accepted_org_pcts.append(org_pct)
+            is_verified_org = org_status in (
+                ConsensusStatus.CONCORDANT.value,
+                "concordant",
+                "agreement",
+                "discrepancy_resolved",
+            )
+            organ_sql = self._generate_organ_upsert_sql(
+                model_id=model_id,
+                dataset_name=canonical_name,
+                organ_name=canon_org,
+                score_pct=org_pct,
+                prompt_type=org_prompt,
+                data_budget=org_budget,
+                is_verified=is_verified_org,
+                source_ref=source_ref,
+            )
             diffs.append(ScoreCurationDiff(
                 dataset_name=canonical_name,
-                target_table="results_best_comments",
-                action=CurationActionType.SKIP_DISPUTED_SCORE,
-                consensus_status=status,
-                comment=comment_text,
-                sql_statement=sql,
+                organ_name=canon_org,
+                target_table="results_organ_scores",
+                action=CurationActionType.INSERT_SCORE,
+                new_score=org_pct,
+                consensus_status=org_status,
+                comment=f"Per-organ score for {canon_org} ({org_status}); Ref: {org_table_ref}",
+                source_reference=source_ref,
+                sql_statement=organ_sql,
             ))
-            return diffs
 
-        # -------------------------------------------------------------
-        # POLICY 2: SINGLE-AGENT UNCONFIRMED SCORES
-        # -------------------------------------------------------------
-        if status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED.value:
-            if audit_confidence < self.single_agent_min_conf:
+        # When granular specific organs were reported, wide-table results_best receives deterministic mean of accepted organs
+        if has_specific_organs:
+            if not accepted_org_pcts:
+                comment_text = f"[GRANULAR DISPUTE/LOW-CONF BLOCKED] No accepted organs for {canonical_name}; Ref: {table_ref}"
+                esc_comment = self._escape_sql(comment_text)
+                sql = f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
+                diffs.append(ScoreCurationDiff(
+                    dataset_name=canonical_name,
+                    organ_name="Dataset-Level",
+                    target_table="results_best_comments",
+                    action=CurationActionType.SKIP_DISPUTED_SCORE,
+                    consensus_status=status,
+                    comment=comment_text,
+                    sql_statement=sql,
+                ))
+                return diffs
+            score_pct = round(sum(accepted_org_pcts) / len(accepted_org_pcts), 2)
+            effective_status = ConsensusStatus.CONCORDANT.value if any(
+                o.get("status") == ConsensusStatus.CONCORDANT.value for o in organ_breakdown
+            ) else status
+        else:
+            effective_status = status
+
+            # -------------------------------------------------------------
+            # POLICY 1: DISPUTED SCORES
+            # -------------------------------------------------------------
+            if status == ConsensusStatus.DISPUTED.value:
                 comment_text = (
-                    f"[UNCONFIRMED OMITTED (conf={audit_confidence:.2f} < {self.single_agent_min_conf:.2f})] "
-                    f"Score: {raw_score}; Ref: {table_ref}"
+                    f"[DISPUTE BLOCKED] Model A: {item.get('score_a')} vs Model B: {item.get('score_b')} "
+                    f"(Δ={item.get('delta')}); Ref: {table_ref}"
                 )
                 esc_comment = self._escape_sql(comment_text)
                 sql = f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
 
                 diffs.append(ScoreCurationDiff(
                     dataset_name=canonical_name,
+                    organ_name="Dataset-Level",
                     target_table="results_best_comments",
-                    action=CurationActionType.SKIP_UNCONFIRMED_SCORE,
+                    action=CurationActionType.SKIP_DISPUTED_SCORE,
                     consensus_status=status,
                     comment=comment_text,
                     sql_statement=sql,
                 ))
                 return diffs
 
-        if raw_score is None:
-            return diffs
+            # -------------------------------------------------------------
+            # POLICY 2: SINGLE-AGENT UNCONFIRMED SCORES
+            # -------------------------------------------------------------
+            if status == ConsensusStatus.SINGLE_AGENT_UNCONFIRMED.value:
+                if audit_confidence < self.single_agent_min_conf:
+                    comment_text = (
+                        f"[UNCONFIRMED OMITTED (conf={audit_confidence:.2f} < {self.single_agent_min_conf:.2f})] "
+                        f"Score: {raw_score}; Ref: {table_ref}"
+                    )
+                    esc_comment = self._escape_sql(comment_text)
+                    sql = f'UPDATE "results_best_comments" SET "{esc_col}" = \'{esc_comment}\' WHERE ID = \'{esc_id}\';'
 
-        # Normalize score to percentage format for SQLite [0.0, 100.0]
-        score_pct = round(float(raw_score) * 100.0, 2) if float(raw_score) <= 1.0 else round(float(raw_score), 2)
+                    diffs.append(ScoreCurationDiff(
+                        dataset_name=canonical_name,
+                        organ_name="Dataset-Level",
+                        target_table="results_best_comments",
+                        action=CurationActionType.SKIP_UNCONFIRMED_SCORE,
+                        consensus_status=status,
+                        comment=comment_text,
+                        sql_statement=sql,
+                    ))
+                    return diffs
+
+            if raw_score is None:
+                return diffs
+
+            # Normalize score to percentage format for SQLite [0.0, 100.0]
+            score_pct = round(float(raw_score) * 100.0, 2) if float(raw_score) <= 1.0 else round(float(raw_score), 2)
+
+        status = effective_status
 
         # Construct provenance comment
         provenance_prefix = (
