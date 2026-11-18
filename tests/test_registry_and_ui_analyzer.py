@@ -74,7 +74,7 @@ class TestModelRegistry:
 
         p_r1 = resolve_model_profile("deepseek-r1-14b-awq")
         assert p_r1.is_reasoning is True
-        assert p_r1.max_output_tokens == 4096
+        assert p_r1.max_output_tokens == 8192
 
         p_mistral = resolve_model_profile("solidrust/Mistral-7B-Instruct-v0.3-AWQ")
         assert p_mistral.key == "mistral-7b-awq"
@@ -122,10 +122,10 @@ class TestModelRegistry:
         assert plan["needs_bitsandbytes"] is False
 
     def test_plan_mufasa_allocation_sequential_dual(self):
-        """Large models (VRAM sum > 12.5GB) trigger 2-stage sequential dual mode."""
+        """Very large models (VRAM sum > 26.0GB on 40GB A100) trigger 2-stage sequential dual mode."""
         plan = plan_mufasa_allocation(
-            model_a="deepseek-r1-14b-awq",
-            model_b="qwen2.5-14b-awq",
+            model_a="deepseek-r1-32b-awq",
+            model_b="qwen2.5-32b-awq",
         )
         assert plan["topology"] == "dual_sequential"
         assert plan["util_a"] == 0.90

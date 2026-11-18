@@ -13,11 +13,11 @@
 #   sbatch scripts/mufasa/run_dual_local_benchmark_mufasa.sh 20 3
 # ==============================================================================
 
-#SBATCH --job-name=gmmis_local_dual
-#SBATCH --qos=gpu
-#SBATCH --gres=gpu:3g.20gb:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --job-name=lpezzoli_dual_local
+#SBATCH --qos=gpuheavy-40
+#SBATCH --gres=gpu:40gb:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/mufasa_dual_local_%j.out
 #SBATCH --error=logs/mufasa_dual_local_%j.err
@@ -25,15 +25,33 @@
 mkdir -p logs
 
 # Activate Python environment on Mufasa
-if [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
+if [ -f "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate" ]; then
+    source "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate"
+elif [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
     source "$HOME/AgentForGMMIS/venv/bin/activate"
 elif [ -f ".venv/bin/activate" ]; then
     source ".venv/bin/activate"
 fi
 
+export PYTHONPATH="$(pwd)/src:${PYTHONPATH:-}"
+if [ -d "$HOME/lpezzoli/.cache" ]; then
+    export HF_HOME="$HOME/lpezzoli/.cache/huggingface"
+    export VLLM_CACHE_DIR="$HOME/lpezzoli/.cache/vllm"
+    export TRITON_CACHE_DIR="$HOME/lpezzoli/.cache/triton"
+fi
+
 # Expose user-space Python C headers to GCC for Triton/CUDA extensions
-export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$CPATH"
-export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
+LOCAL_INC_BASE="$HOME/lpezzoli/.local/usr/include"
+[ ! -d "$LOCAL_INC_BASE" ] && LOCAL_INC_BASE="$HOME/.local/usr/include"
+export CPATH="$LOCAL_INC_BASE:$LOCAL_INC_BASE/python3.12:$LOCAL_INC_BASE/x86_64-linux-gnu/python3.12:$CPATH"
+export C_INCLUDE_PATH="$LOCAL_INC_BASE:$LOCAL_INC_BASE/python3.12:$LOCAL_INC_BASE/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+if command -v nvidia-smi &>/dev/null; then
+    if [ -z "${CUDA_VISIBLE_DEVICES:-}" ] || [[ "${CUDA_VISIBLE_DEVICES}" == *","* ]]; then
+        BEST_GPU=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -nr | head -n 1 | awk -F',' '{print $1}' | tr -d ' ')
+        export CUDA_VISIBLE_DEVICES="${BEST_GPU:-0}"
+    fi
+fi
 
 MODEL_A_DEFAULT="Qwen/Qwen2.5-7B-Instruct-AWQ"
 MODEL_B_DEFAULT="solidrust/Mistral-7B-Instruct-v0.3-AWQ"
@@ -106,7 +124,7 @@ trap cleanup EXIT INT TERM
 echo "Starting vLLM Server A on port $PORT_A for $MODEL_A..."
 vllm serve "$MODEL_A" \
     --port "$PORT_A" \
-    --max-model-len 16384 \
+    --max-model-len 24576 \
     --gpu-memory-utilization 0.43 \
     --enforce-eager \
     $TEMPLATE_ARG_A \
@@ -138,7 +156,7 @@ echo "✅ Server A is LIVE on port $PORT_A!"
 echo "Starting vLLM Server B on port $PORT_B for $MODEL_B..."
 vllm serve "$MODEL_B" \
     --port "$PORT_B" \
-    --max-model-len 16384 \
+    --max-model-len 24576 \
     --gpu-memory-utilization 0.43 \
     --enforce-eager \
     $TEMPLATE_ARG_B \

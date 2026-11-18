@@ -18,10 +18,16 @@
 set -e
 
 # Activate Mufasa virtual environment if present
-if [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
+if [ -f "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate" ]; then
+    source "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate"
+elif [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
     source "$HOME/AgentForGMMIS/venv/bin/activate"
 elif [ -f ".venv/bin/activate" ]; then
     source ".venv/bin/activate"
+fi
+
+if [ -d "$HOME/lpezzoli/.cache" ]; then
+    export HF_HOME="$HOME/lpezzoli/.cache/huggingface"
 fi
 
 # Ensure huggingface_hub is installed
@@ -57,11 +63,17 @@ case "$TARGET" in
     qwen)
         download_repo "Qwen/Qwen2.5-14B-Instruct-AWQ" "Qwen 2.5 14B AWQ (Alibaba)"
         ;;
+    qwen32b)
+        download_repo "Qwen/Qwen2.5-32B-Instruct-AWQ" "Qwen 2.5 32B AWQ (Alibaba — 40GB GPU)"
+        ;;
     llama)
         download_repo "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4" "Llama 3.1 8B Instruct AWQ (Meta / Hugging Face Quant)"
         ;;
     deepseek)
         download_repo "casperhansen/deepseek-r1-distill-qwen-14b-awq" "DeepSeek R1 Distill Qwen 14B AWQ (DeepSeek AI)"
+        ;;
+    deepseek32b)
+        download_repo "casperhansen/deepseek-r1-distill-qwen-32b-awq" "DeepSeek R1 Distill Qwen 32B AWQ (DeepSeek AI — 40GB GPU)"
         ;;
     glm)
         download_repo "THUDM/glm-4-9b-chat" "GLM-4 9B Chat (Zhipu AI / Tsinghua)"

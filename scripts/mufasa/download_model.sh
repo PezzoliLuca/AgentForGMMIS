@@ -9,7 +9,15 @@
 
 set -e
 
-source ~/AgentForGMMIS/venv/bin/activate
+if [ -f "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate" ]; then
+    source "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate"
+elif [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
+    source "$HOME/AgentForGMMIS/venv/bin/activate"
+fi
+
+if [ -d "$HOME/lpezzoli/.cache" ]; then
+    export HF_HOME="$HOME/lpezzoli/.cache/huggingface"
+fi
 
 # Install requirements if not already present
 pip install -q huggingface_hub vllm

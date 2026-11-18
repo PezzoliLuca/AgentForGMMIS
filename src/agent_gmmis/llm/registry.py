@@ -25,7 +25,7 @@ class ModelProfile:
     vram_gb: float                    # Estimated weight footprint on 20GB MIG slice
     default_max_len_single: int       # Context window when running alone on 20GB GPU
     default_max_len_dual: int         # Context window when co-located with another model
-    max_output_tokens: int = 2048     # Output token limit (4096 for reasoning models)
+    max_output_tokens: int = 4096     # Output token limit (8192 for reasoning models)
     is_reasoning: bool = False        # True for models with <think> reasoning traces
     needs_chat_template: Optional[str] = None  # e.g. "scripts/mufasa/mistral_chat_template.jinja"
     quantization_flag: Optional[str] = None    # e.g. "bitsandbytes" for BF16 models on 20GB MIG
@@ -53,6 +53,17 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         family="Qwen",
         origin="China",
         vram_gb=10.5,
+        default_max_len_single=32768,
+        default_max_len_dual=24576,
+    ),
+    "qwen2.5-32b-awq": ModelProfile(
+        key="qwen2.5-32b-awq",
+        display_name="Qwen 2.5 32B Instruct (AWQ — 40GB GPU)",
+        hf_repo_or_id="Qwen/Qwen2.5-32B-Instruct-AWQ",
+        provider="mufasa",
+        family="Qwen",
+        origin="China",
+        vram_gb=19.5,
         default_max_len_single=32768,
         default_max_len_dual=16384,
     ),
@@ -99,8 +110,8 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         family="Mistral",
         origin="Europe",
         vram_gb=12.5,
-        default_max_len_single=24576,
-        default_max_len_dual=16384,
+        default_max_len_single=32768,
+        default_max_len_dual=24576,
         needs_chat_template="scripts/mufasa/mistral_chat_template.jinja",
     ),
     "deepseek-r1-14b-awq": ModelProfile(
@@ -111,9 +122,22 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
         family="DeepSeek",
         origin="China",
         vram_gb=9.5,
-        default_max_len_single=24576,
+        default_max_len_single=32768,
+        default_max_len_dual=24576,
+        max_output_tokens=8192,
+        is_reasoning=True,
+    ),
+    "deepseek-r1-32b-awq": ModelProfile(
+        key="deepseek-r1-32b-awq",
+        display_name="DeepSeek-R1 Distill Qwen 32B (AWQ — 40GB GPU)",
+        hf_repo_or_id="casperhansen/deepseek-r1-distill-qwen-32b-awq",
+        provider="mufasa",
+        family="DeepSeek",
+        origin="China",
+        vram_gb=19.5,
+        default_max_len_single=32768,
         default_max_len_dual=16384,
-        max_output_tokens=4096,
+        max_output_tokens=8192,
         is_reasoning=True,
     ),
     "glm-4-9b-chat": ModelProfile(
@@ -188,6 +212,8 @@ MODEL_CATALOG: Dict[str, ModelProfile] = {
     ),
 }
 
+MODEL_REGISTRY = MODEL_CATALOG
+
 
 def resolve_model_profile(identifier: str, provider_hint: Optional[str] = None) -> ModelProfile:
     """
@@ -224,8 +250,13 @@ def resolve_model_profile(identifier: str, provider_hint: Optional[str] = None) 
     family = "Custom"
     origin = "Unknown"
     vram_gb = 8.0
-    is_reasoning = "r1" in norm_key or "reasoner" in norm_key or "reasoning" in norm_key
-    max_output = 4096 if is_reasoning else 2048
+    is_reasoning = (
+        "r1" in norm_key
+        or "reasoner" in norm_key
+        or "reasoning" in norm_key
+        or "qwen3" in norm_key
+    )
+    max_output = 8192 if is_reasoning else 4096
 
     if norm_key.startswith("gemini") or provider_hint == "gemini":
         provider = "gemini"
@@ -395,16 +426,25 @@ def plan_mufasa_allocation(
     combined_vram = prof_a.vram_gb + prof_b.vram_gb
     needs_bnb = (prof_a.quantization_flag == "bitsandbytes") or (prof_b.quantization_flag == "bitsandbytes")
 
-    # Threshold for simultaneous dual execution on 20GB MIG slice:
-    # 12.5 GB model weights leaves >= 7.5 GB for KV-cache + CUDA context (total memory utilization <= 0.88)
-    if combined_vram <= 12.5:
+    # Threshold for simultaneous dual execution on 40GB A100 slice (gpuheavy-40 / gpu:40gb:1):
+    # 26.0 GB model weights leaves >= 14.0 GB for dual KV-caches + CUDA contexts (total utilization <= 0.88)
+    if combined_vram <= 26.0:
         # Dynamic memory allocation proportional to weight size, scaled to total 0.86
         ratio_a = prof_a.vram_gb / max(0.1, combined_vram)
-        util_a = max(0.35, min(0.53, round(0.86 * ratio_a, 2)))
+        util_a = max(0.32, min(0.56, round(0.86 * ratio_a, 2)))
         util_b = round(0.86 - util_a, 2)
 
-        vllm_args_a = build_vllm_serve_args(prof_a, port=8000, gpu_util=util_a, max_len=prof_a.default_max_len_dual)
-        vllm_args_b = build_vllm_serve_args(prof_b, port=8001, gpu_util=util_b, max_len=prof_b.default_max_len_dual)
+        # When running two medium/large models (e.g. 14B+14B=20GB or 22B+14B=23GB)
+        # simultaneously on 40GB, cap KV-cache context at 16384 to avoid OOM.
+        if combined_vram >= 18.0:
+            max_len_a = min(prof_a.default_max_len_dual, 16384)
+            max_len_b = min(prof_b.default_max_len_dual, 16384)
+        else:
+            max_len_a = prof_a.default_max_len_dual
+            max_len_b = prof_b.default_max_len_dual
+
+        vllm_args_a = build_vllm_serve_args(prof_a, port=8000, gpu_util=util_a, max_len=max_len_a)
+        vllm_args_b = build_vllm_serve_args(prof_b, port=8001, gpu_util=util_b, max_len=max_len_b)
 
         return {
             "topology": "dual_simultaneous",
@@ -414,8 +454,8 @@ def plan_mufasa_allocation(
             "util_b": util_b,
             "port_a": 8000,
             "port_b": 8001,
-            "max_len_a": prof_a.default_max_len_dual,
-            "max_len_b": prof_b.default_max_len_dual,
+            "max_len_a": max_len_a,
+            "max_len_b": max_len_b,
             "vllm_args_a": vllm_args_a,
             "vllm_args_b": vllm_args_b,
             "needs_bitsandbytes": needs_bnb,

@@ -4,11 +4,12 @@
 set -euo pipefail
 
 MUFASA_HOST="${MUFASA_HOST:-10.79.23.96}"
-MUFASA_USER="${MUFASA_USER:-lpezzoli}"
+MUFASA_USER="${MUFASA_USER:-amoglia}"
+MUFASA_DIR="${MUFASA_DIR:-~/lpezzoli/AgentForGMMIS}"
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "🔎 Checking active SLURM benchmark jobs on Mufasa (${MUFASA_USER}@${MUFASA_HOST})..."
-ACTIVE_JOB=$(ssh "${MUFASA_USER}@${MUFASA_HOST}" "source /etc/profile.d/modules.sh 2>/dev/null; module load amd/slurm 2>/dev/null; squeue -u ${MUFASA_USER} -h -o '%i %j %T' | grep -E 'gmmis|bench' | head -n 1" || true)
+ACTIVE_JOB=$(ssh "${MUFASA_USER}@${MUFASA_HOST}" "source /etc/profile.d/modules.sh 2>/dev/null; module load amd/slurm 2>/dev/null; export PATH=/opt/shared/sw/amd/gcc-13.3.0/slurm-25.05.4/bin:\$PATH; squeue -u ${MUFASA_USER} -h -o '%i %j %T' | grep -E 'lpezzoli|gmmis|bench' | head -n 1" || true)
 
 if [ -z "${ACTIVE_JOB}" ]; then
     echo "ℹ️ No running benchmark jobs found on Mufasa. Syncing latest completed runs directly..."
@@ -28,9 +29,10 @@ ssh "${MUFASA_USER}@${MUFASA_HOST}" "
     module load amd/slurm 2>/dev/null
     
     # Wait for the SLURM log file to appear
+    export PATH="/opt/shared/sw/amd/gcc-13.3.0/slurm-25.05.4/bin:\$PATH"
     SLURM_LOG=\"\"
     for i in \$(seq 1 15); do
-        SLURM_LOG=\$(ls -t ~/AgentForGMMIS/logs/*_${JOB_ID}.out 2>/dev/null | head -n 1 || true)
+        SLURM_LOG=\$(ls -t ${MUFASA_DIR}/logs/*_${JOB_ID}.out 2>/dev/null | head -n 1 || true)
         [ -n \"\${SLURM_LOG}\" ] && break
         sleep 1
     done

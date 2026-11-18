@@ -76,7 +76,7 @@ def discover_runs(
 
             manifest_file = c_dir / "run_manifest.json"
 
-            if not results_file and not manifest_file:
+            if not results_file or not results_file.exists():
                 continue
 
             # Read metadata

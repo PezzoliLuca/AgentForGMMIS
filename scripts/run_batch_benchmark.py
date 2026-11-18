@@ -339,6 +339,7 @@ def main():
                                     organ_or_task=cs.organ_or_task or "Overall",
                                     dice_score=cs.resolved_score,
                                     prompt_type=cs.prompt_type,
+                                    data_budget_or_setting=cs.data_budget_or_setting,
                                     table_or_section_ref=cs.table_ref_a or cs.table_ref_b,
                                 )
                             )
@@ -417,7 +418,7 @@ def main():
                     audit_report=audit_report,
                     final_extracted=extracted,
                     eval_report=report,
-                    repo_inspector_result=repo_inspector if repo_recovered else None,
+                    repo_inspector_result={"recovered": True, "code_repository_url": extracted.code_repository_url} if repo_recovered else None,
                     outreach_draft=outreach_draft,
                     curation_result=curation_result,
                     elapsed_seconds=elapsed,
@@ -451,6 +452,7 @@ def main():
                     "extracted_a": extracted_a,
                     "extracted_b": extracted_b if is_dual else None,
                     "audit_report": audit_report,
+                    "deliberation_trajectory": deliberation_trajectory,
                     "curation_result": curation_result,
                     "elapsed": elapsed,
                     "pdf_name": pdf_path.name,
@@ -497,8 +499,10 @@ def main():
                 print(f"   📂 Artifacts saved to: {paper_dir.relative_to(run_logger.run_dir)}")
 
             except Exception as e:
+                import traceback
                 elapsed = time.time() - t0
                 print(f"   ❌ Error processing {model_id}: {e}")
+                print(traceback.format_exc())
                 summary_rows.append([
                     model_id,
                     "❌ ERROR",
@@ -556,6 +560,96 @@ def main():
         coverage_adjusted_score = overall_recall * (1.0 - (micro_mae_active or 0.0))
         total_time_all = sum(it.get("elapsed", 0.0) for it in detailed_reports)
 
+        # Inter-Agent Agreement (IAA) & Epistemic Stratification Metrics (Primary Thesis Metric)
+        dual_items = [
+            it for it in detailed_reports
+            if it.get("audit_report") and hasattr(it["audit_report"], "consensus_scores")
+        ]
+        iaa_total_concordant = sum(it["audit_report"].concordant_count for it in dual_items)
+        iaa_total_disputed = sum(it["audit_report"].dispute_count for it in dual_items)
+        iaa_total_singletons = sum(it["audit_report"].unconfirmed_count for it in dual_items)
+        iaa_total_paired = sum(getattr(it["audit_report"], "paired_count", 0) for it in dual_items)
+        iaa_total_items = iaa_total_concordant + iaa_total_disputed + iaa_total_singletons
+
+        all_paired_cs = [
+            cs for it in dual_items for cs in it["audit_report"].consensus_scores
+            if cs.score_a is not None and cs.score_b is not None and cs.delta is not None
+        ]
+        iaa_exact_count = sum(1 for cs in all_paired_cs if cs.delta <= 0.001)
+
+        micro_paired_iaa = (iaa_total_concordant / iaa_total_paired) if iaa_total_paired > 0 else None
+        micro_strict_iaa = (iaa_total_concordant / iaa_total_items) if iaa_total_items > 0 else None
+        micro_exact_iaa = (iaa_exact_count / len(all_paired_cs)) if all_paired_cs else None
+        micro_inter_agent_mae = (sum(cs.delta for cs in all_paired_cs) / len(all_paired_cs)) if all_paired_cs else None
+
+        macro_paired_vals = [
+            getattr(it["audit_report"], "paired_concordance_rate", it["audit_report"].concordance_rate)
+            for it in dual_items if getattr(it["audit_report"], "paired_count", 0) > 0
+        ]
+        macro_strict_vals = [
+            getattr(it["audit_report"], "strict_concordance_rate", 0.0)
+            for it in dual_items if it["audit_report"].total_unique_benchmarks > 0
+        ]
+        macro_exact_vals = [
+            getattr(it["audit_report"], "exact_concordance_rate", 0.0)
+            for it in dual_items if getattr(it["audit_report"], "paired_count", 0) > 0
+        ]
+        macro_inter_mae_vals = [
+            it["audit_report"].inter_model_dice_mae
+            for it in dual_items if it["audit_report"].inter_model_dice_mae is not None
+        ]
+
+        macro_paired_iaa = (sum(macro_paired_vals) / len(macro_paired_vals)) if macro_paired_vals else None
+        macro_strict_iaa = (sum(macro_strict_vals) / len(macro_strict_vals)) if macro_strict_vals else None
+        macro_exact_iaa = (sum(macro_exact_vals) / len(macro_exact_vals)) if macro_exact_vals else None
+        macro_inter_agent_mae = (sum(macro_inter_mae_vals) / len(macro_inter_mae_vals)) if macro_inter_mae_vals else None
+
+        # Round-1 vs Final Deliberation IAA Trajectory
+        r1_rates: List[float] = []
+        r1_maes: List[float] = []
+        total_delib_resolved = 0
+        for it in dual_items:
+            traj = it.get("deliberation_trajectory") or []
+            if traj:
+                r1_rates.append(traj[0].concordance_rate_before)
+                if traj[0].inter_model_mae_before is not None:
+                    r1_maes.append(traj[0].inter_model_mae_before)
+                total_delib_resolved += sum(t.resolved_count for t in traj)
+            elif getattr(it["audit_report"], "paired_count", 0) > 0:
+                r1_rates.append(getattr(it["audit_report"], "paired_concordance_rate", it["audit_report"].concordance_rate))
+                if it["audit_report"].inter_model_dice_mae is not None:
+                    r1_maes.append(it["audit_report"].inter_model_dice_mae)
+
+        round1_macro_iaa = (sum(r1_rates) / len(r1_rates)) if r1_rates else None
+        round1_macro_inter_mae = (sum(r1_maes) / len(r1_maes)) if r1_maes else None
+        delib_iaa_delta_pp = ((macro_paired_iaa - round1_macro_iaa) * 100.0) if (macro_paired_iaa is not None and round1_macro_iaa is not None) else None
+
+        # Stratify Human GT Error by Dual-Agent Concordance
+        concordant_gt_diffs: List[float] = []
+        non_concordant_gt_diffs: List[float] = []
+        for it in dual_items:
+            rep = it.get("report")
+            ar = it.get("audit_report")
+            if not rep or not ar:
+                continue
+            ds_status_map: Dict[str, List[str]] = {}
+            for cs in ar.consensus_scores:
+                d_key = (cs.canonical_dataset_name or cs.dataset_name or "").strip().lower()
+                ds_status_map.setdefault(d_key, []).append(cs.status.value)
+            for comp in rep.score_comparisons:
+                diff_v = comp.get("diff")
+                if diff_v is None:
+                    continue
+                d_key = (comp.get("dataset") or "").strip().lower()
+                statuses = ds_status_map.get(d_key, [])
+                if statuses and all(st == "concordant" for st in statuses):
+                    concordant_gt_diffs.append(diff_v)
+                else:
+                    non_concordant_gt_diffs.append(diff_v)
+
+        gt_mae_when_concordant = (sum(concordant_gt_diffs) / len(concordant_gt_diffs)) if concordant_gt_diffs else None
+        gt_mae_when_non_concordant = (sum(non_concordant_gt_diffs) / len(non_concordant_gt_diffs)) if non_concordant_gt_diffs else None
+
         # Append summary total row
         summary_rows_with_total = list(summary_rows)
         summary_rows_with_total.append([
@@ -578,6 +672,17 @@ def main():
         headers = ["Model ID", "Audit Status", "Confidence", "Datasets Matched", "Recall", "Dice MAE", "Time"]
         summary_table_str = tabulate(summary_rows_with_total, headers=headers, tablefmt="github")
         print(summary_table_str)
+
+        if dual_items:
+            print("\n🤝 INTER-AGENT AGREEMENT (IAA) SUMMARY (Primary Unsupervised Metric):")
+            print(f"   - Paired IAA (Concordant / Paired): Micro={f'{micro_paired_iaa:.1%}' if micro_paired_iaa is not None else 'N/A'} ({iaa_total_concordant}/{iaa_total_paired}) | Macro={f'{macro_paired_iaa:.1%}' if macro_paired_iaa is not None else 'N/A'}")
+            print(f"   - Strict Total IAA (Concordant / All): Micro={f'{micro_strict_iaa:.1%}' if micro_strict_iaa is not None else 'N/A'} | Macro={f'{macro_strict_iaa:.1%}' if macro_strict_iaa is not None else 'N/A'}")
+            print(f"   - Exact IAA (|A-B| <= 0.001): Micro={f'{micro_exact_iaa:.1%}' if micro_exact_iaa is not None else 'N/A'} | Macro={f'{macro_exact_iaa:.1%}' if macro_exact_iaa is not None else 'N/A'}")
+            print(f"   - Inter-Agent MAE: Micro={f'{micro_inter_agent_mae:.4f}' if micro_inter_agent_mae is not None else 'N/A'} | Macro={f'{macro_inter_agent_mae:.4f}' if macro_inter_agent_mae is not None else 'N/A'}")
+            if delib_iaa_delta_pp is not None:
+                print(f"   - Deliberation Impact: Round-1 {round1_macro_iaa:.1%} -> Final {macro_paired_iaa:.1%} ({delib_iaa_delta_pp:+.1f} pp, {total_delib_resolved} items resolved)")
+            if gt_mae_when_concordant is not None or gt_mae_when_non_concordant is not None:
+                print(f"   - GT Stratification: MAE|Concordant={f'{gt_mae_when_concordant:.4f}' if gt_mae_when_concordant is not None else 'N/A'} (n={len(concordant_gt_diffs)}) vs MAE|Non-Concordant={f'{gt_mae_when_non_concordant:.4f}' if gt_mae_when_non_concordant is not None else 'N/A'} (n={len(non_concordant_gt_diffs)})")
 
         # Print Aggregated Database Curation Summary Table
         curation_plans = [it["curation_result"].plan for it in detailed_reports if it.get("curation_result")]
@@ -647,6 +752,20 @@ def main():
             f"- **Coverage-Adjusted Accuracy Score**: `{coverage_adjusted_score:.4f}` (`Recall * (1.0 - Micro_MAE)` to penalize survivorship bias)",
             "",
         ]
+
+        if dual_items:
+            md_lines.extend([
+                "### 🤝 Inter-Agent Agreement (IAA) & Epistemic Reliability (Primary Metric)",
+                "",
+                f"- **Paired IAA (`Concordant / Paired`)**: Micro **`{f'{micro_paired_iaa:.1%}' if micro_paired_iaa is not None else 'N/A'}`** (`{iaa_total_concordant}/{iaa_total_paired}`) | Macro **`{f'{macro_paired_iaa:.1%}' if macro_paired_iaa is not None else 'N/A'}`**",
+                f"- **Strict Total IAA (`Concordant / (Concordant + Disputed + Singletons)`)**: Micro **`{f'{micro_strict_iaa:.1%}' if micro_strict_iaa is not None else 'N/A'}`** (`{iaa_total_concordant}/{iaa_total_items}`) | Macro **`{f'{macro_strict_iaa:.1%}' if macro_strict_iaa is not None else 'N/A'}`**",
+                f"- **Exact IAA (`|A - B| <= 0.001`)**: Micro **`{f'{micro_exact_iaa:.1%}' if micro_exact_iaa is not None else 'N/A'}`** | Macro **`{f'{macro_exact_iaa:.1%}' if macro_exact_iaa is not None else 'N/A'}`**",
+                f"- **Inter-Agent Dice MAE (`|A - B|`)**: Micro **`{f'{micro_inter_agent_mae:.4f}' if micro_inter_agent_mae is not None else 'N/A'}`** | Macro **`{f'{macro_inter_agent_mae:.4f}' if macro_inter_agent_mae is not None else 'N/A'}`**",
+                f"- **Item Breakdown**: `{iaa_total_concordant}` concordant, `{iaa_total_disputed}` disputed, `{iaa_total_singletons}` singletons across `{len(dual_items)}` dual-audited papers",
+                f"- **Double-Blind Deliberation Gain**: Round-1 `{f'{round1_macro_iaa:.1%}' if round1_macro_iaa is not None else 'N/A'}` → Final `{f'{macro_paired_iaa:.1%}' if macro_paired_iaa is not None else 'N/A'}` (`{f'{delib_iaa_delta_pp:+.1f} pp' if delib_iaa_delta_pp is not None else 'N/A'}`, `{total_delib_resolved}` resolved items)",
+                f"- **Ground-Truth Stratification (`MAE_GT | Agreement`)**: Concordant `{f'{gt_mae_when_concordant:.4f}' if gt_mae_when_concordant is not None else 'N/A'}` (n={len(concordant_gt_diffs)}) vs Non-Concordant `{f'{gt_mae_when_non_concordant:.4f}' if gt_mae_when_non_concordant is not None else 'N/A'}` (n={len(non_concordant_gt_diffs)})",
+                "",
+            ])
 
         outreach_items = [it for it in detailed_reports if it.get("outreach_draft")]
         if outreach_items:
@@ -724,6 +843,28 @@ def main():
                 "macro_mae_best": macro_mae_best,
                 "coverage_adjusted_score": coverage_adjusted_score,
                 "total_elapsed_seconds": total_time_all,
+                "iaa_metrics": {
+                    "micro_paired_iaa": micro_paired_iaa,
+                    "macro_paired_iaa": macro_paired_iaa,
+                    "micro_strict_iaa": micro_strict_iaa,
+                    "macro_strict_iaa": macro_strict_iaa,
+                    "micro_exact_iaa": micro_exact_iaa,
+                    "macro_exact_iaa": macro_exact_iaa,
+                    "micro_inter_agent_mae": micro_inter_agent_mae,
+                    "macro_inter_agent_mae": macro_inter_agent_mae,
+                    "concordant_items_total": iaa_total_concordant,
+                    "disputed_items_total": iaa_total_disputed,
+                    "singleton_items_total": iaa_total_singletons,
+                    "paired_items_total": iaa_total_paired,
+                    "round1_macro_iaa": round1_macro_iaa,
+                    "round1_macro_inter_mae": round1_macro_inter_mae,
+                    "deliberation_iaa_delta_pp": delib_iaa_delta_pp,
+                    "deliberation_resolved_total": total_delib_resolved,
+                    "gt_mae_when_concordant": gt_mae_when_concordant,
+                    "gt_mae_when_concordant_n": len(concordant_gt_diffs),
+                    "gt_mae_when_non_concordant": gt_mae_when_non_concordant,
+                    "gt_mae_when_non_concordant_n": len(non_concordant_gt_diffs),
+                },
             },
             "summary": [
                 {
@@ -920,14 +1061,35 @@ def main():
                 } if is_dual and ext_b else None,
                 "consensus": {
                     "concordance_rate": ar.concordance_rate,
+                    "paired_concordance_rate": getattr(ar, "paired_concordance_rate", ar.concordance_rate),
+                    "strict_concordance_rate": getattr(ar, "strict_concordance_rate", 0.0),
+                    "exact_concordance_rate": getattr(ar, "exact_concordance_rate", 0.0),
                     "inter_model_dice_mae": ar.inter_model_dice_mae,
+                    "inter_agent_mae": getattr(ar, "inter_agent_mae", ar.inter_model_dice_mae),
                     "concordant_count": ar.concordant_count,
                     "dispute_count": ar.dispute_count,
                     "unconfirmed_count": ar.unconfirmed_count,
+                    "paired_count": getattr(ar, "paired_count", 0),
+                    "concordant_organs_count": getattr(ar, "concordant_organs_count", ar.concordant_count),
+                    "disputed_organs_count": getattr(ar, "disputed_organs_count", ar.dispute_count),
+                    "singleton_organs_count": getattr(ar, "singleton_organs_count", ar.unconfirmed_count),
+                    "deliberation_rounds": [
+                        {
+                            "round_number": t.round_number,
+                            "concordance_rate_before": t.concordance_rate_before,
+                            "concordance_rate_after": t.concordance_rate_after,
+                            "inter_model_mae_before": t.inter_model_mae_before,
+                            "inter_model_mae_after": t.inter_model_mae_after,
+                            "resolved_count": t.resolved_count,
+                            "stalled": t.stalled,
+                        }
+                        for t in (it.get("deliberation_trajectory") or [])
+                    ],
                     "scores": [
                         {
                             "dataset": cs.canonical_dataset_name,
                             "organ": cs.organ_or_task,
+                            "budget": cs.data_budget_or_setting,
                             "score_a": cs.score_a,
                             "score_b": cs.score_b,
                             "delta": cs.delta,

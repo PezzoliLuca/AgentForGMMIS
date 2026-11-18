@@ -177,7 +177,7 @@ with tab_launch:
     st.header("🚀 Launch & Monitor Benchmark Jobs")
     st.markdown(
         "Configure model architectures, execution topologies, and paper evaluation cohorts. "
-        "Supports 100% on-premise dual execution with dynamic sequential staging on 20GB MIG slices."
+        "Supports 100% on-premise dual execution on Mufasa 40GB A100 GPUs (`gpuheavy-40`)."
     )
 
     col_env, col_topo = st.columns(2)
@@ -276,13 +276,13 @@ with tab_launch:
         if plan["topology"] == "dual_simultaneous":
             st.success(
                 f"⚡ **Simultaneous Dual-vLLM Execution**: Combined weight footprint ({plan['prof_a'].vram_gb + plan['prof_b'].vram_gb:.1f} GB) "
-                f"fits comfortably on the 20 GB A100 MIG slice! Dedicated allocations: "
+                f"fits comfortably on the 40 GB A100 GPU! Dedicated allocations: "
                 f"**Agent A ({plan['util_a']*100:.0f}% VRAM)** + **Agent B ({plan['util_b']*100:.0f}% VRAM)**."
             )
         elif plan["topology"] == "dual_sequential":
             st.warning(
                 f"🔄 **2-Stage Sequential Dual Execution**: Combined weights ({plan['prof_a'].vram_gb + plan['prof_b'].vram_gb:.1f} GB) "
-                f"exceed concurrent KV-cache budget on the 20 GB MIG slice. "
+                f"exceed concurrent KV-cache budget on the 40 GB A100 GPU. "
                 f"The orchestrator will automatically execute **Stage 1 (Agent A at 90% VRAM)** followed by "
                 f"**Stage 2 (Agent B + Deliberation at 90% VRAM)** with zero VRAM OOM risk."
             )
@@ -364,6 +364,13 @@ with tab_launch:
                     st.error(f"Cannot launch on Mufasa: Host is unreachable.\n\nDetails: {current_status.get('error')}")
                 else:
                     with st.spinner("Syncing code and submitting SLURM job to Mufasa..."):
+                        extra_parts = []
+                        if audit_gt:
+                            extra_parts.append("--audit-ground-truth")
+                        if apply_curate:
+                            extra_parts.append("--apply-curation")
+                        if custom_paper_models:
+                            extra_parts.append(f"--models {' '.join(custom_paper_models)}")
                         cfg = {
                             "model_a": model_a_id,
                             "model_b": model_b_id or "",
@@ -373,6 +380,7 @@ with tab_launch:
                             "max_rounds": max_delib_rounds,
                             "compare_source": gt_source,
                             "tag": run_tag_input,
+                            "extra_args": " ".join(extra_parts),
                         }
                         ok, res_job_id = cm.launch_mufasa_job(cfg, sync_first=True)
                         if ok:
@@ -411,7 +419,7 @@ with tab_launch:
                     else:
                         st.error(f"Cancellation error:\n{res}")
     else:
-        st.caption("No active jobs currently running in SLURM queue for user `lpezzoli`.")
+        st.caption(f"No active jobs currently running in SLURM queue for user `{cm.user}` (`~/lpezzoli`).")
 
 
 # ------------------------------------------------------------------------------

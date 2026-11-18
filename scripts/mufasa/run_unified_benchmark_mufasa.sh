@@ -14,11 +14,11 @@
 #   sbatch --export=ALL,MODEL_A=deepseek-r1-14b-awq,MODEL_B=qwen2.5-14b-awq,COUNT=40 scripts/mufasa/run_unified_benchmark_mufasa.sh
 # ==============================================================================
 
-#SBATCH --job-name=gmmis_bench
-#SBATCH --qos=gpu
-#SBATCH --gres=gpu:3g.20gb:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH --job-name=lpezzoli_gmmis
+#SBATCH --qos=gpuheavy-40
+#SBATCH --gres=gpu:40gb:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
 #SBATCH --time=04:00:00
 #SBATCH --output=logs/mufasa_unified_%j.out
 #SBATCH --error=logs/mufasa_unified_%j.err
@@ -28,11 +28,22 @@ mkdir -p logs
 # Ensure slurm binaries are in PATH on Mufasa compute nodes
 export PATH="/opt/shared/sw/amd/gcc-13.3.0/slurm-25.05.4/bin:$PATH"
 
-# 1. Activate Python virtual environment on Mufasa
-if [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
+# 1. Activate Python virtual environment on Mufasa (isolated under ~/lpezzoli)
+if [ -f "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate" ]; then
+    source "$HOME/lpezzoli/AgentForGMMIS/venv/bin/activate"
+elif [ -f "$HOME/AgentForGMMIS/venv/bin/activate" ]; then
     source "$HOME/AgentForGMMIS/venv/bin/activate"
 elif [ -f ".venv/bin/activate" ]; then
     source ".venv/bin/activate"
+fi
+
+export PYTHONPATH="$(pwd)/src:${PYTHONPATH:-}"
+
+# Isolate HuggingFace, vLLM, and Triton caches under ~/lpezzoli/.cache
+if [ -d "$HOME/lpezzoli/.cache" ]; then
+    export HF_HOME="$HOME/lpezzoli/.cache/huggingface"
+    export VLLM_CACHE_DIR="$HOME/lpezzoli/.cache/vllm"
+    export TRITON_CACHE_DIR="$HOME/lpezzoli/.cache/triton"
 fi
 
 # Load GEMINI_API_KEY from .env if present
@@ -41,9 +52,20 @@ if [ -f ".env" ]; then
 fi
 
 # Expose user-space Python C headers for Triton / CUDA vLLM extensions
-export CPATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$CPATH"
-export C_INCLUDE_PATH="$HOME/.local/usr/include:$HOME/.local/usr/include/python3.12:$HOME/.local/usr/include/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
+LOCAL_INC_BASE="$HOME/lpezzoli/.local/usr/include"
+[ ! -d "$LOCAL_INC_BASE" ] && LOCAL_INC_BASE="$HOME/.local/usr/include"
+export CPATH="$LOCAL_INC_BASE:$LOCAL_INC_BASE/python3.12:$LOCAL_INC_BASE/x86_64-linux-gnu/python3.12:$CPATH"
+export C_INCLUDE_PATH="$LOCAL_INC_BASE:$LOCAL_INC_BASE/python3.12:$LOCAL_INC_BASE/x86_64-linux-gnu/python3.12:$C_INCLUDE_PATH"
 export VLLM_USE_V1=0
+export CUDA_DEVICE_ORDER=PCI_BUS_ID
+
+# Auto-select the cleanest 40GB A100 GPU if SLURM exposes multiple cards
+if command -v nvidia-smi &>/dev/null; then
+    if [ -z "${CUDA_VISIBLE_DEVICES:-}" ] || [[ "${CUDA_VISIBLE_DEVICES}" == *","* ]]; then
+        BEST_GPU=$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits | sort -t',' -k2 -nr | head -n 1 | awk -F',' '{print $1}' | tr -d ' ')
+        export CUDA_VISIBLE_DEVICES="${BEST_GPU:-0}"
+    fi
+fi
 
 # 2. Argument Parsing (support both CLI positional arguments and environment variables)
 if [[ "$1" =~ ^[0-9]+$ ]]; then
@@ -80,6 +102,7 @@ PLAN_ARGS=(--plan-bash --model-a "$MODEL_A")
 
 echo "📐 Querying Model Registry Plan: python3 -m agent_gmmis.llm.registry ${PLAN_ARGS[*]}"
 eval "$(python3 -m agent_gmmis.llm.registry "${PLAN_ARGS[@]}")"
+export MUFASA_MAX_MODEL_LEN="${MAX_LEN_A:-24576}"
 
 # Check auto-installation of bitsandbytes if requested by any selected model
 if [ "$NEEDS_BITSANDBYTES" = "true" ] || [[ "$VLLM_ARGS_A $VLLM_ARGS_B" == *"bitsandbytes"* ]]; then
@@ -112,11 +135,14 @@ echo "=================================================================="
 
 nvidia-smi
 
-# Process cleanup handler
+# Process cleanup handler (kills parent vLLM API server + VLLM::EngineCore children)
 cleanup() {
     echo "🛑 Shutting down active vLLM servers..."
+    [ -n "$VLLM_PID_A" ] && pkill -9 -P "$VLLM_PID_A" 2>/dev/null || true
     [ -n "$VLLM_PID_A" ] && kill -9 "$VLLM_PID_A" 2>/dev/null || true
+    [ -n "$VLLM_PID_B" ] && pkill -9 -P "$VLLM_PID_B" 2>/dev/null || true
     [ -n "$VLLM_PID_B" ] && kill -9 "$VLLM_PID_B" 2>/dev/null || true
+    pkill -9 -f "VLLM::EngineCore|vllm serve" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -124,7 +150,7 @@ wait_for_server() {
     local port=$1
     local pid=$2
     local name=$3
-    local max_wait=300
+    local max_wait=900
     local elapsed=0
     echo "Waiting for $name to be ready on port $port (PID: $pid)..."
     until curl -sf "http://localhost:$port/health" > /dev/null || [ $elapsed -ge $max_wait ]; do
@@ -160,6 +186,7 @@ if [ "$TOPOLOGY" = "single" ]; then
         BASE_URL_A=""
     fi
 
+    export MUFASA_MAX_MODEL_LEN="$MAX_LEN_A"
     python3 -u scripts/run_batch_benchmark.py \
         --provider-a "$PROVIDER_A" \
         --model-a "$MODEL_A_REPO" \
@@ -177,6 +204,7 @@ elif [ "$TOPOLOGY" = "hybrid" ]; then
         VLLM_PID_A=$!
         wait_for_server "$PORT_A" "$VLLM_PID_A" "Server A" || exit 1
         BASE_URL_A="http://localhost:$PORT_A/v1"
+        export MUFASA_MAX_MODEL_LEN="$MAX_LEN_A"
     else
         BASE_URL_A=""
     fi
@@ -188,6 +216,7 @@ elif [ "$TOPOLOGY" = "hybrid" ]; then
         VLLM_PID_B=$!
         wait_for_server "$PORT_B" "$VLLM_PID_B" "Server B" || exit 1
         BASE_URL_B="http://localhost:$PORT_B/v1"
+        export MUFASA_MAX_MODEL_LEN="$MAX_LEN_B"
     else
         BASE_URL_B=""
     fi
@@ -212,15 +241,15 @@ elif [ "$TOPOLOGY" = "dual_simultaneous" ]; then
     echo "🚀 Starting concurrent Server A on port $PORT_A..."
     vllm serve $VLLM_ARGS_A > "$LOG_A" 2>&1 &
     VLLM_PID_A=$!
+    wait_for_server "$PORT_A" "$VLLM_PID_A" "Server A" || exit 1
 
     echo "🚀 Starting concurrent Server B on port $PORT_B..."
     vllm serve $VLLM_ARGS_B > "$LOG_B" 2>&1 &
     VLLM_PID_B=$!
-
-    wait_for_server "$PORT_A" "$VLLM_PID_A" "Server A" || exit 1
     wait_for_server "$PORT_B" "$VLLM_PID_B" "Server B" || exit 1
 
-    echo "🤝 Both local servers live! Running simultaneous consensus benchmark..."
+    export MUFASA_MAX_MODEL_LEN=$(( MAX_LEN_A < MAX_LEN_B ? MAX_LEN_A : MAX_LEN_B ))
+    echo "🤝 Both local servers live (MUFASA_MAX_MODEL_LEN=$MUFASA_MAX_MODEL_LEN)! Running simultaneous consensus benchmark..."
     python3 -u scripts/run_batch_benchmark.py \
         --provider-a mufasa \
         --model-a "$MODEL_A_REPO" \
@@ -250,7 +279,8 @@ elif [ "$TOPOLOGY" = "dual_sequential" ]; then
     VLLM_PID_A=$!
     wait_for_server "$PORT_A" "$VLLM_PID_A" "Server A" || exit 1
 
-    echo "📄 Running Stage 1 Extractions (Agent A)..."
+    echo "📄 Running Stage 1 Extractions (Agent A, MUFASA_MAX_MODEL_LEN=$MAX_LEN_A)..."
+    export MUFASA_MAX_MODEL_LEN="$MAX_LEN_A"
     python3 -u scripts/run_batch_benchmark.py \
         --provider-a mufasa \
         --model-a "$MODEL_A_REPO" \
@@ -263,10 +293,12 @@ elif [ "$TOPOLOGY" = "dual_sequential" ]; then
         --stage-cache-dir "$STAGE_CACHE" \
         "${EXTRA_ARGS[@]}"
 
-    echo "🛑 Shutting down Server A to free GPU VRAM for Stage 2..."
+    echo "🛑 Shutting down Server A and EngineCore workers to free GPU VRAM for Stage 2..."
+    pkill -9 -P "$VLLM_PID_A" 2>/dev/null || true
     kill -9 "$VLLM_PID_A" 2>/dev/null || true
+    pkill -9 -f "VLLM::EngineCore|vllm serve" 2>/dev/null || true
     unset VLLM_PID_A
-    sleep 5
+    sleep 10
     nvidia-smi
 
     # --- STAGE 2: Launch Server B with 90% GPU, run Agent B + Deliberation ---
@@ -276,7 +308,8 @@ elif [ "$TOPOLOGY" = "dual_sequential" ]; then
     VLLM_PID_B=$!
     wait_for_server "$PORT_B" "$VLLM_PID_B" "Server B" || exit 1
 
-    echo "🤝 Running Stage 2 Extractions, Reconciliations & Auditing (Agent B)..."
+    echo "🤝 Running Stage 2 Extractions, Reconciliations & Auditing (Agent B, MUFASA_MAX_MODEL_LEN=$MAX_LEN_B)..."
+    export MUFASA_MAX_MODEL_LEN="$MAX_LEN_B"
     python3 -u scripts/run_batch_benchmark.py \
         --provider-a mufasa \
         --model-a "$MODEL_A_REPO" \

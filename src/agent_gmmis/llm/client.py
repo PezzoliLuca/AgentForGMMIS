@@ -136,6 +136,106 @@ class LLMClient:
                     rationale="Verified peak score in Table 1 under bounding box prompt.",
                 )  # type: ignore
 
+            if response_model.__name__ == "ReinterrogationOrganBreakdownResponse":
+                import re
+                from agent_gmmis.extraction.schemas import ReinterrogationOrganBreakdownResponse
+                m_ds = re.search(r"On dataset '([^']+)'", prompt) or re.search(r"Dataset Name:\s*([^\n\r]+)", prompt)
+                ds_name = m_ds.group(1).strip() if m_ds else "BTCV"
+                return ReinterrogationOrganBreakdownResponse(
+                    dataset_name=ds_name,
+                    organ_scores=[],
+                    table_or_section_ref="Table 1",
+                    only_macro_average_reported=True,
+                    rationale="Mock offline mode: no additional per-organ breakdown inferred.",
+                )  # type: ignore
+
+            if response_model.__name__ == "ScoutQueryPlan":
+                from agent_gmmis.scouting.schemas import GeneratedSearchQuery, ScoutQueryPlan, ScoutTier
+                return ScoutQueryPlan(
+                    thought_process="Targeting emerging 3D foundation models (SAM2/Mamba/VLM) and volumetric radiological benchmarks.",
+                    queries=[
+                        GeneratedSearchQuery(
+                            query_string="3D medical image segmentation foundation model SAM2 volumetric CT MRI",
+                            target_tier=ScoutTier.TIER_1_GENERALIST,
+                            rationale="Discover novel 3D promptable SAM2 adaptations for volumetric CT/MRI.",
+                        ),
+                        GeneratedSearchQuery(
+                            query_string="text-prompted universal 3D medical segmentation TotalSegmentator AMOS",
+                            target_tier=ScoutTier.TIER_1_GENERALIST,
+                            rationale="Discover vision-language generalist 3D segmentation models.",
+                        ),
+                        GeneratedSearchQuery(
+                            query_string="3D Mamba volumetric medical segmentation BraTS BTCV FLARE",
+                            target_tier=ScoutTier.TIER_2_BENCHMARK_SOTA,
+                            rationale="Track state-space SOTA 3D architectures on canonical benchmarks.",
+                        ),
+                    ],
+                )  # type: ignore
+
+            if response_model.__name__ == "ScoutScreeningResult":
+                from agent_gmmis.scouting.schemas import (
+                    ScoutScreeningResult,
+                    ScoutThoughtProcess,
+                    ScoutTier,
+                    TriStateCriterion,
+                )
+                p_low = prompt.lower()
+                # Heuristic mock evaluation for deterministic testing
+                is_survey = any(w in p_low for w in ["a survey", "comprehensive review", "systematic review", "scoping review", "literature review"])
+                is_2d_only = any(w in p_low for w in ["retinal fundus", "dermoscopy", "histopathology", "whole slide", "2d colonoscopy", "optical colonoscopy", "2d only"]) and not any(w in p_low for w in ["3d", "volumetric", "ct", "mri", "pet"])
+                is_non_seg = any(w in p_low for w in ["image synthesis", "report generation", "pure classification", "without performing semantic segmentation", "super-resolution"]) and "segmentation model" not in p_low
+                is_private_only = any(
+                    w in p_low
+                    for w in [
+                        "exclusively on an internal",
+                        "exclusively on an in-house",
+                        "exclusively on a proprietary",
+                        "solely on a proprietary",
+                        "confidential private cohort",
+                        "proprietary dataset only",
+                    ]
+                )
+
+                if is_survey or is_2d_only or is_non_seg or is_private_only:
+                    return ScoutScreeningResult(
+                        thought_process=ScoutThoughtProcess(
+                            task_and_novelty_analysis="Excluded: survey/review or non-segmentation task." if (is_survey or is_non_seg) else "Segmentation task detected.",
+                            dimensionality_and_modality_analysis="Excluded: restricted to 2D or non-radiological optical modality." if is_2d_only else "3D/radiological modality.",
+                            benchmark_and_paradigm_analysis="Excluded: private clinical cohort only." if is_private_only else "Out of scope.",
+                        ),
+                        reasoning="Mock screening identified explicit exclusion criteria in abstract.",
+                        proposed_model_name=None,
+                        is_novel_segmentation_model=not (is_survey or is_non_seg),
+                        is_3d_volumetric=TriStateCriterion.NO if is_2d_only else TriStateCriterion.YES,
+                        is_radiological=TriStateCriterion.NO if is_2d_only else TriStateCriterion.YES,
+                        uses_public_benchmarks=TriStateCriterion.NO if is_private_only else TriStateCriterion.IMPLICIT_UNKNOWN,
+                        tier=ScoutTier.REJECTED,
+                        mentioned_datasets=[],
+                        imaging_modalities=[],
+                        discovered_external_leads=[],
+                    )  # type: ignore
+
+                is_generalist = any(w in p_low for w in ["foundation model", "generalist", "segment anything", "sam", "promptable", "universal", "zero-shot", "text-driven", "text-prompted", "multi-modality"])
+                tier = ScoutTier.TIER_1_GENERALIST if is_generalist else ScoutTier.TIER_2_BENCHMARK_SOTA
+                datasets = [ds for ds in ["AMOS", "BTCV", "BraTS", "TotalSegmentator", "FLARE", "KiTS", "LiTS"] if ds.lower() in p_low]
+                return ScoutScreeningResult(
+                    thought_process=ScoutThoughtProcess(
+                        task_and_novelty_analysis="Proposes a novel medical image segmentation architecture.",
+                        dimensionality_and_modality_analysis="Evaluates on 3D volumetric radiological imaging (CT/MRI/PET) or implicit multi-modal datasets.",
+                        benchmark_and_paradigm_analysis=f"Classified as {tier.value} based on generalist/promptable vs task-specific cues.",
+                    ),
+                    reasoning="Valid 3D radiological segmentation model identified from abstract.",
+                    proposed_model_name="MockModel3D",
+                    is_novel_segmentation_model=True,
+                    is_3d_volumetric=TriStateCriterion.YES if any(w in p_low for w in ["3d", "volumetric", "ct", "mri", "pet"]) else TriStateCriterion.IMPLICIT_UNKNOWN,
+                    is_radiological=TriStateCriterion.YES if any(w in p_low for w in ["ct", "mri", "pet", "ultrasound"]) else TriStateCriterion.IMPLICIT_UNKNOWN,
+                    uses_public_benchmarks=TriStateCriterion.YES if datasets or "public" in p_low or "benchmark" in p_low else TriStateCriterion.IMPLICIT_UNKNOWN,
+                    tier=tier,
+                    mentioned_datasets=datasets,
+                    imaging_modalities=[m for m in ["CT", "MRI", "PET"] if m.lower() in p_low],
+                    discovered_external_leads=[],
+                )  # type: ignore
+
             return response_model.model_construct()
 
         # Native Google GenAI Provider
@@ -153,10 +253,13 @@ class LLMClient:
 
             import time
             response = None
-            max_retries = 6
-            backoff = 5.0
-            current_model = self.config.model
-            fallback_models = ["gemini-3.1-flash-lite", "gemini-flash-latest", "gemini-flash-lite-latest"]
+            max_retries = 8
+            backoff = 2.0
+            primary_model = self.config.model
+            current_model = primary_model
+            fallback_models = [primary_model, "gemini-flash-lite-latest"]
+            # Deduplicate while preserving order
+            fallback_models = list(dict.fromkeys(m for m in fallback_models if m))
             for attempt in range(max_retries):
                 try:
                     global _gemini_pacing_lock, _last_gemini_timestamp
@@ -177,12 +280,12 @@ class LLMClient:
                     err_msg = str(exc)
                     if any(x in err_msg for x in ["503", "UNAVAILABLE", "high demand", "429", "RESOURCE_EXHAUSTED", "Quota exceeded", "404", "NOT_FOUND"]):
                         if attempt < max_retries - 1:
-                            if attempt >= 1 and attempt < len(fallback_models):
-                                current_model = fallback_models[attempt]
-                                print(f"   ⚠️ [Google AI Studio API Retry] Switching to model '{current_model}'...")
-                            print(f"   ⚠️ [Google AI Studio API Retry] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
-                            time.sleep(backoff)
-                            backoff = min(backoff * 1.5, 20.0)
+                            current_model = fallback_models[(attempt + 1) % len(fallback_models)]
+                            print(f"   ⚠️ [Google AI Studio API Retry] Switching to model '{current_model}'...")
+                            if "404" not in err_msg and "NOT_FOUND" not in err_msg:
+                                print(f"   ⚠️ [Google AI Studio API Retry] Retrying {current_model} in {backoff:.1f}s (attempt {attempt+1}/{max_retries})...")
+                                time.sleep(backoff)
+                                backoff = min(backoff * 1.5, 20.0)
                             continue
                     raise exc
             import re
@@ -203,14 +306,13 @@ class LLMClient:
         messages.append({"role": "user", "content": prompt})
 
         # Calculate realistic output token budget for structured JSON response:
-        # ExtractedPaperData needs at most ~2048 tokens (4096 for reasoning models with <think> traces)
-        # Reinterrogation responses need at most ~800 tokens (1536 for reasoning models).
+        # Granular per-organ extraction can emit 30+ RawExtractedScore rows across multi-organ benchmarks.
         resp_name = getattr(response_model, "__name__", "")
         is_reasoning = bool(getattr(self, "profile", None) and self.profile.is_reasoning)
         if is_reasoning:
-            max_needed_output = 4096 if resp_name == "ExtractedPaperData" else 1536
+            max_needed_output = 8192 if resp_name == "ExtractedPaperData" else 3072
         else:
-            max_needed_output = 2048 if resp_name == "ExtractedPaperData" else 800
+            max_needed_output = 4096 if resp_name == "ExtractedPaperData" else 1536
 
         # Clean, inline and compact schema representation to preserve context tokens and eliminate $defs
         raw_schema = response_model.model_json_schema()
@@ -232,16 +334,24 @@ class LLMClient:
         schema_json = json.dumps(compact_schema, separators=(",", ":"))
 
         total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-        # Conservative token estimation: 2.3 chars per token + 500 token padding
-        approx_tokens = int(total_chars / 2.3) + 500
-        context_limit = 16384 if self.config.provider in ("mufasa", "ollama") else 32768
+        if self.config.provider == "mufasa":
+            default_mufasa_ctx = getattr(getattr(self, "profile", None), "default_max_len_dual", 24576) or 24576
+            context_limit = int(os.getenv("MUFASA_MAX_MODEL_LEN", str(default_mufasa_ctx)))
+        elif self.config.provider == "ollama":
+            context_limit = 16384
+        else:
+            context_limit = 32768
+
+        # Conservative character-to-token estimation (numeric tables tokenize denser than prose)
+        chars_per_token = 1.85 if context_limit <= 16384 else 2.2
+        approx_tokens = int(total_chars / chars_per_token) + 800
 
         # Guarantee at least max_needed_output tokens of generation headroom by trimming prompt if needed
-        required_headroom = max_needed_output + 500
+        required_headroom = max_needed_output + 800
         if approx_tokens > context_limit - required_headroom and len(prompt) > 4000:
             excess_tokens = approx_tokens - (context_limit - required_headroom)
-            excess_chars = int(excess_tokens * 2.3) + 500
-            
+            excess_chars = int(excess_tokens * chars_per_token) + 800
+
             # Avoid cutting the middle where comparative tables are located!
             # If the prompt contains the manuscript content header, trim trailing content (ablation/appendices)
             marker = "=== MANUSCRIPT CONTENT"
@@ -253,10 +363,10 @@ class LLMClient:
                 mid = len(prompt) // 2
                 half_trim = min(mid - 500, max(500, excess_chars // 2))
                 prompt = prompt[: mid - half_trim] + "\n\n[... middle text trimmed to respect context limit ...]\n\n" + prompt[mid + half_trim :]
-            
+
             messages[-1]["content"] = prompt
             total_chars = len(prompt) + (len(system_prompt) if system_prompt else 0) + len(schema_json)
-            approx_tokens = int(total_chars / 2.3) + 500
+            approx_tokens = int(total_chars / chars_per_token) + 800
 
         safe_max_tokens = min(max_needed_output, max(800, context_limit - approx_tokens - 500))
 

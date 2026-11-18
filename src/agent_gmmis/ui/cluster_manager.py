@@ -24,11 +24,11 @@ class ClusterManager:
         self,
         host: Optional[str] = None,
         user: Optional[str] = None,
-        remote_dir: str = "~/AgentForGMMIS",
+        remote_dir: Optional[str] = None,
     ):
         self.host = host or os.getenv("MUFASA_HOST", "10.79.23.96")
-        self.user = user or os.getenv("MUFASA_USER", "lpezzoli")
-        self.remote_dir = remote_dir
+        self.user = user or os.getenv("MUFASA_USER", "amoglia")
+        self.remote_dir = remote_dir or os.getenv("MUFASA_REMOTE_DIR", "~/lpezzoli/AgentForGMMIS")
         self.target = f"{self.user}@{self.host}"
         self.proj_root = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -63,7 +63,7 @@ class ClusterManager:
         check_cmd = (
             "echo '===SECTION:PING===' && echo 'PONG' && "
             "echo '===SECTION:SQUEUE===' && (squeue -u $USER -o '%.18i %.9P %.20j %.8u %.2t %.10M %.6D %R' 2>/dev/null || true) && "
-            "echo '===SECTION:HF_MODELS===' && (ls -1 ~/.cache/huggingface/hub/ 2>/dev/null || true)"
+            "echo '===SECTION:HF_MODELS===' && (ls -1 ~/lpezzoli/.cache/huggingface/hub/ ~/.cache/huggingface/hub/ 2>/dev/null | sort -u || true)"
         )
         code, stdout, stderr = self._run_ssh(check_cmd, timeout=8)
 
@@ -166,6 +166,7 @@ class ClusterManager:
         max_rounds = launch_cfg.get("max_rounds", 3)
         compare_source = launch_cfg.get("compare_source", "primary")
         tag = launch_cfg.get("tag", "")
+        extra_cli_args = launch_cfg.get("extra_args", "")
 
         export_vars = [
             f"MODEL_A={model_a}",
@@ -186,7 +187,7 @@ class ClusterManager:
 
         sbatch_cmd = (
             f"cd {self.remote_dir} && "
-            f"sbatch --export={export_arg} scripts/mufasa/run_unified_benchmark_mufasa.sh"
+            f"sbatch --export={export_arg} scripts/mufasa/run_unified_benchmark_mufasa.sh {extra_cli_args}".strip()
         )
 
         code, stdout, stderr = self._run_ssh(sbatch_cmd, timeout=15)
