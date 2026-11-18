@@ -1,0 +1,382 @@
+[
+  {
+    "id": "TP_01_MedSAM2",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "MedSAM2: Segment Anything in 3D Medical Images and Videos",
+    "venue": "arXiv",
+    "publication_date": "2025-04-01",
+    "arxiv_id": "2504.03600",
+    "abstract": "We present MedSAM2, a promptable foundation model for 3D volumetric medical image segmentation across CT, MRI, and PET scans as well as medical videos. Built upon the memory-attention architecture of SAM 2, MedSAM2 treats 3D radiological volumes as slice sequences, enabling one-prompt 3D organ and lesion segmentation across TotalSegmentator, AMOS22, BTCV, and FLARE benchmarks."
+  },
+  {
+    "id": "TP_02_SAM_Med3D",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "SAM-Med3D: Towards General-purpose Segmentation Models for Volumetric Medical Images",
+    "venue": "arXiv",
+    "publication_date": "2023-10-23",
+    "arxiv_id": "2310.15161",
+    "abstract": "Segment Anything Model (SAM) has shown remarkable zero-shot capabilities on 2D natural images, yet struggles on 3D volumetric medical images due to lack of 3D spatial context. We propose SAM-Med3D, a native 3D ViT encoder-decoder promptable segmentation foundation model trained on 131,000 3D CT and MRI masks across 245 anatomical categories. Extensive experiments on TotalSegmentator, AMOS, and BTCV demonstrate superior Dice scores with just 1-point interactive prompts."
+  },
+  {
+    "id": "TP_03_VISTA3D",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "VISTA3D: A Unified Segmentation Foundation Model For 3D Medical Imaging",
+    "venue": "CVPR",
+    "publication_date": "2024-06-12",
+    "arxiv_id": "2406.08418",
+    "abstract": "We introduce VISTA3D, a versatile imaging segmentation and annotation foundation model designed specifically for 3D computed tomography (CT) scans. VISTA3D unifies automatic multi-organ segmentation and interactive point-prompted 3D zero-shot segmentation across 127 classes, achieving state-of-the-art performance on TotalSegmentator, BTCV, MSD, and KiTS benchmarks."
+  },
+  {
+    "id": "TP_04_SegAnyPET",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "SegAnyPET: Universal Promptable Segmentation from Positron Emission Tomography Images",
+    "venue": "arXiv",
+    "publication_date": "2025-02-20",
+    "arxiv_id": "2502.14351",
+    "abstract": "Positron Emission Tomography (PET) plays a vital role in metabolic and oncological imaging, yet lacks universal 3D foundation models. We propose SegAnyPET, a 3D promptable foundation model for volumetric whole-body PET segmentation trained with uncertainty-rectified cross-teaching. Evaluated on AutoPET and public multi-organ PET benchmarks, SegAnyPET outperforms both interactive 2D SAM variants and task-specific 3D baselines."
+  },
+  {
+    "id": "TP_05_SAT",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "One Model to Rule Them All: Towards Universal Segmentation for Medical Images with Text Prompts",
+    "venue": "arXiv",
+    "publication_date": "2023-12-28",
+    "arxiv_id": "2312.17183",
+    "abstract": "We present SAT (Segment Anything with Text), a universal text-prompted 3D medical image segmentation foundation model capable of segmenting 497 anatomical structures and lesions across 3D CT, MRI, and PET scans using natural language prompts. Trained on a curated multi-dataset corpus of 72 public 3D medical segmentation benchmarks including TotalSegmentator, AMOS, BraTS, and BTCV, SAT demonstrates strong generalization."
+  },
+  {
+    "id": "TP_06_OpenVocabCT",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "Towards Universal Text-driven CT Image Segmentation",
+    "venue": "arXiv",
+    "publication_date": "2025-03-08",
+    "arxiv_id": "2503.06030",
+    "abstract": "We propose OpenVocabCT, a vision-language 3D medical segmentation framework that aligns volumetric CT features with medical anatomical text embeddings. Our model enables open-vocabulary and universal 3D organ and tumor segmentation on TotalSegmentator, FLARE22, AMOS22, and AbdomenCT-1K."
+  },
+  {
+    "id": "TP_07_ProtoSAM3D",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "ProtoSAM-3D: Interactive semantic segmentation in volumetric medical imaging via a Segment Anything Model and mask-level prototypes",
+    "venue": "Computerized Medical Imaging and Graphics",
+    "publication_date": "2025-02-01",
+    "doi": "10.1016/j.compmedimag.2025.102501",
+    "abstract": "Interactive 3D segmentation in volumetric CT and MRI requires propagating sparse user prompts across slices. We propose ProtoSAM-3D, combining Segment Anything Model representations with 3D mask-level prototypes for volumetric organ and tumor segmentation on public benchmarks including BraTS, AMOS, and KiTS."
+  },
+  {
+    "id": "TP_08_SegVol",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "SegVol: Universal and Interactive Volumetric Medical Image Segmentation",
+    "venue": "NeurIPS",
+    "publication_date": "2024-11-01",
+    "arxiv_id": "2311.13385",
+    "abstract": "We introduce SegVol, a universal and interactive 3D volumetric medical segmentation foundation model supporting point, bounding box, and text prompts across over 200 anatomical categories in 3D CT scans. Evaluated on 25 public 3D datasets including BTCV, AMOS, and FLARE, SegVol achieves high Dice accuracy with low computational cost."
+  },
+  {
+    "id": "TP_09_Prism",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "Prism: A Promptable and Accurate 3D Medical Image Segmentation Model",
+    "venue": "arXiv",
+    "publication_date": "2024-04-23",
+    "arxiv_id": "2404.15022",
+    "abstract": "Existing 3D promptable medical foundation models still lag behind specialist models in boundary precision. We propose Prism, an interactive 3D volumetric segmentation model that accepts point, box, and scribble prompts and refines 3D masks iteratively on public CT and MRI benchmarks such as BTCV, Amos, and KiTS."
+  },
+  {
+    "id": "TP_10_BiomedParse",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "A foundation model for joint segmentation, detection and recognition of biomedical objects across nine modalities",
+    "venue": "Nature Methods",
+    "publication_date": "2024-11-18",
+    "doi": "10.1038/s41592-024-02499-w",
+    "abstract": "We present BiomedParse, a biomedical foundation model for joint text-prompted segmentation, detection, and recognition across nine imaging modalities including volumetric CT, MRI, ultrasound, and X-ray. Evaluated across public benchmarks including AMOS, MSD, BraTS, and ACDC, BiomedParse enables flexible text-driven biomedical object parsing."
+  },
+  {
+    "id": "TP_11_FastSAM3D",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "FastSAM3D: An Efficient Segment Anything Model for 3D Volumetric Medical Images",
+    "venue": "MICCAI",
+    "publication_date": "2024-10-01",
+    "arxiv_id": "2403.05306",
+    "abstract": "3D Segment Anything models suffer from high latency during interactive clinical workflows. We propose FastSAM3D, distilling 3D ViT representations into a lightweight 3D sparse flash-attention backbone for real-time interactive point-prompted 3D CT and MRI segmentation on TotalSegmentator and BTCV."
+  },
+  {
+    "id": "TP_12_MedLSAM_ImplicitDice",
+    "expected_included": true,
+    "expected_tier": "TIER_1_GENERALIST",
+    "title": "MedLSAM: Localize and Segment Anything Model for 3D CT and MRI Images",
+    "venue": "Medical Image Analysis",
+    "publication_date": "2024-08-01",
+    "arxiv_id": "2306.14752",
+    "abstract": "Applying Segment Anything Model to 3D medical volumes typically requires tedious slice-by-slice manual bounding boxes. We propose MedLSAM, which automatically localizes 3D anatomical landmarks in volumetric CT and MRI scans to generate 3D bounding-box prompts for zero-shot foundation segmentation across public multi-organ datasets."
+  },
+  {
+    "id": "TP_13_STUNet",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "STU-Net: Scalable and Transferable Medical Image Segmentation Models Empowered by Large-Scale Supervised Pre-training",
+    "venue": "arXiv",
+    "publication_date": "2023-04-13",
+    "arxiv_id": "2304.06716",
+    "abstract": "We design STU-Net, scaling the 3D nnU-Net architecture from 14 million up to 1.4 billion parameters pre-trained on TotalSegmentator 3D CT volumes. Downstream evaluation across 14 public 3D medical segmentation benchmarks including BTCV, AMOS, KiTS, LiTS, and BraTS establishes new state-of-the-art volumetric Dice performance."
+  },
+  {
+    "id": "TP_14_LHUNet",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "LHU-Net: A Lean Hybrid U-Net for Cost-Efficient, High-Performance Volumetric Medical Image Segmentation",
+    "venue": "arXiv",
+    "publication_date": "2024-02-01",
+    "arxiv_id": "2402.04022",
+    "abstract": "We propose LHU-Net, a compact hybrid 3D CNN-Transformer architecture combining large-kernel 3D depthwise convolutions and spatial-channel self-attention for volumetric medical image segmentation. Evaluated on Synapse multi-organ CT (BTCV), ACDC cardiac MRI, and Left Atrium 3D MRI benchmarks, LHU-Net achieves 87.83% Dice on Synapse with only 11M parameters."
+  },
+  {
+    "id": "TP_15_UMamba",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "U-Mamba: Enhancing Long-range Dependency for Biomedical Image Segmentation",
+    "venue": "arXiv",
+    "publication_date": "2024-01-09",
+    "arxiv_id": "2401.04722",
+    "abstract": "Capturing long-range dependencies in 3D volumetric medical scans with Transformers incurs quadratic complexity. We introduce U-Mamba, a hybrid CNN and State Space Model (SSM) 3D segmentation network evaluated on 3D Abdomen CT (FLARE) and Abdomen MRI (AMOS) public benchmarks, outperforming nnU-Net and Swin UNETR."
+  },
+  {
+    "id": "TP_16_SwinUNETR",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "Swin UNETR: Swin Transformers for Semantic Segmentation of Brain Tumors in MRI Images",
+    "venue": "MICCAI BrainLes",
+    "publication_date": "2022-01-01",
+    "arxiv_id": "2201.01266",
+    "abstract": "We formulate 3D brain tumor semantic segmentation in multimodal volumetric MRI as a sequence-to-sequence prediction task using a 3D Swin Transformer encoder connected to a CNN decoder via skip connections. Evaluated on the public BraTS 2021 challenge benchmark, Swin UNETR ranks among the top-performing 3D architectures."
+  },
+  {
+    "id": "TP_17_UNETR_PlusPlus",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "UNETR++: Delving into Efficient and Accurate 3D Medical Image Segmentation",
+    "venue": "IEEE Transactions on Medical Imaging",
+    "publication_date": "2024-05-01",
+    "arxiv_id": "2212.04497",
+    "abstract": "We propose UNETR++, a 3D medical segmentation architecture introducing an Efficient Paired Attention (EPA) block to learn spatial and channel-wise discriminative features in volumetric scans. Extensive experiments on Synapse (BTCV), BraTS, ACDC, and MSD Decathlon 3D CT/MRI benchmarks show superior Dice scores with 71% fewer FLOPs."
+  },
+  {
+    "id": "TP_18_DiffUNet",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "Diff-UNet: A Diffusion Embedded Network for Volumetric Segmentation",
+    "venue": "Medical Image Analysis",
+    "publication_date": "2023-08-01",
+    "arxiv_id": "2303.10326",
+    "abstract": "We propose Diff-UNet, an end-to-end 3D denoising diffusion network designed for volumetric medical image segmentation. By iteratively refining 3D segmentation probability maps conditioned on volumetric CT and MRI features, Diff-UNet achieves state-of-the-art results on BraTS2020, BTCV multi-organ CT, and MSD Liver 3D benchmarks."
+  },
+  {
+    "id": "TP_19_SegResNet",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "3D MRI brain tumor segmentation using autoencoder regularization",
+    "venue": "MICCAI BrainLes",
+    "publication_date": "2018-10-01",
+    "arxiv_id": "1810.11654",
+    "abstract": "We describe a 3D residual encoder-decoder semantic segmentation network (SegResNet) with a variational autoencoder branch to regularize the shared 3D encoder during volumetric multimodal brain MRI tumor segmentation on the BraTS challenge dataset."
+  },
+  {
+    "id": "TP_20_SlimUNETR_ImplicitMetrics",
+    "expected_included": true,
+    "expected_tier": "TIER_2_BENCHMARK_SOTA",
+    "title": "Slim UNETR: Rethinking 3D Medical Image Segmentation with Lightweight Vision Transformers",
+    "venue": "IEEE JBHI",
+    "publication_date": "2024-03-01",
+    "abstract": "Deploying 3D Transformer segmentation models on resource-constrained clinical workstations remains challenging. We propose Slim UNETR, a lightweight 3D volumetric segmentation network for CT and MRI organ delineation. Quantitative evaluations on BraTS and Abdomen multi-organ CT benchmarks confirm competitive accuracy with only 1.8M parameters."
+  },
+  {
+    "id": "TN_01_PolypSAM_2D",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Polyp-SAM: Transfer SAM for Polyp Segmentation in 2D Colonoscopy Frames",
+    "venue": "SPIE Medical Imaging",
+    "publication_date": "2024-04-01",
+    "abstract": "Colorectal polyp segmentation in 2D optical colonoscopy images is critical for early cancer screening. We fine-tune the 2D Segment Anything Model (SAM) on five 2D endoscopic polyp datasets (Kvasir-SEG, CVC-ClinicDB, ColonDB), achieving 91.2% Dice on 2D RGB colonoscopy images."
+  },
+  {
+    "id": "TN_02_PathoSAM_WSI",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "PathoSAM: Adapting Segment Anything for Cell Nuclei and Tissue Segmentation in Histopathology Whole Slide Images",
+    "venue": "Medical Image Analysis",
+    "publication_date": "2025-01-15",
+    "abstract": "Digital pathology relies on accurate instance segmentation of cell nuclei and glands in 2D H&E-stained Whole Slide Images (WSI). We present PathoSAM, a promptable foundation model specialized exclusivamente for 2D histopathology microscopy patches across PanNuke and Lizard datasets."
+  },
+  {
+    "id": "TN_03_RetinaSAM_Fundus",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "RetinaSAM: Promptable Retinal Vessel and Optic Disc Segmentation in 2D Color Fundus Photography",
+    "venue": "arXiv",
+    "publication_date": "2024-09-10",
+    "abstract": "We propose RetinaSAM, an adaptation of the Segment Anything Model for 2D ophthalmic retinal fundus photography. Evaluated on DRIVE, STARE, and REFUGE 2D retinal fundus benchmarks, RetinaSAM improves vessel and optic cup segmentation."
+  },
+  {
+    "id": "TN_04_SkinSAM_Dermoscopy",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "SkinSAM: Zero-Shot Skin Lesion Segmentation in 2D Dermoscopic Images",
+    "venue": "IEEE ISBI",
+    "publication_date": "2024-05-20",
+    "abstract": "Melanoma screening requires precise boundary delineation in 2D dermoscopy images. We evaluate and adapt SAM with box prompts on ISIC 2017 and ISIC 2018 2D skin lesion dermoscopy datasets."
+  },
+  {
+    "id": "TN_05_CellSAM_Microscopy",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "CellSAM: A Foundation Model for 2D Fluorescence Microscopy Cell Segmentation",
+    "venue": "Nature Methods",
+    "publication_date": "2024-11-01",
+    "abstract": "We present CellSAM, a foundation model for 2D phase-contrast and fluorescence cell microscopy segmentation, combining a cell detector with a 2D SAM mask decoder."
+  },
+  {
+    "id": "TN_06_Survey_SAM_Med",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "A Comprehensive Survey of Segment Anything Model (SAM) in 3D and 2D Medical Image Segmentation",
+    "venue": "Information Fusion",
+    "publication_date": "2025-02-01",
+    "abstract": "In this survey paper, we review over 120 recent studies that adapt the Segment Anything Model (SAM) to 2D and 3D medical image segmentation across CT, MRI, PET, and ultrasound, categorizing adaptation strategies and future challenges."
+  },
+  {
+    "id": "TN_07_Review_3D_Transformers",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Transformers in 3D Volumetric Medical Image Segmentation: A Systematic Review and Meta-Analysis",
+    "venue": "IEEE Reviews in Biomedical Engineering",
+    "publication_date": "2024-12-01",
+    "abstract": "This systematic review and meta-analysis synthesizes published literature on 3D Vision Transformers for CT and MRI segmentation between 2021 and 2024 following PRISMA guidelines. No new model architecture is proposed."
+  },
+  {
+    "id": "TN_08_ScopingReview_VLM",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Vision-Language Foundation Models in Radiological Segmentation: A Scoping Review",
+    "venue": "European Radiology",
+    "publication_date": "2025-03-01",
+    "abstract": "We conduct a scoping review of vision-language foundation models applied to radiological tasks including CT and MRI segmentation, summarizing existing benchmarks and clinical translation barriers."
+  },
+  {
+    "id": "TN_09_Review_Mamba",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "A Review of State Space Models and Mamba in Medical Imaging",
+    "venue": "Computers in Biology and Medicine",
+    "publication_date": "2025-01-20",
+    "abstract": "State space models such as Mamba have recently emerged as efficient alternatives to Transformers. This literature review summarizes current Mamba architectures across medical image classification, synthesis, and segmentation."
+  },
+  {
+    "id": "TN_10_LiteratureReview_BraTS",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Deep Learning for Brain Tumor Segmentation on BraTS: A Literature Review of 10 Years",
+    "venue": "Artificial Intelligence in Medicine",
+    "publication_date": "2024-08-15",
+    "abstract": "We provide a historical overview and literature review of winning methods in the Brain Tumor Segmentation (BraTS) challenge over the past decade."
+  },
+  {
+    "id": "TN_11_MedDiff3D_SynthesisOnly",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "MedDiff-3D: High-Resolution 3D CT and MRI Volume Synthesis via Latent Diffusion Models",
+    "venue": "IEEE TMI",
+    "publication_date": "2025-01-10",
+    "abstract": "We propose MedDiff-3D, a 3D latent diffusion generative model for synthesizing realistic unconditional 3D chest CT and brain MRI volumes. We evaluate image synthesis quality using FID, MS-SSIM, and PSNR metrics."
+  },
+  {
+    "id": "TN_12_RadVLM_ReportGenOnly",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "RadVLM-3D: Automated Radiology Report Generation and Disease Classification from Volumetric Chest CT",
+    "venue": "MICCAI",
+    "publication_date": "2024-10-05",
+    "abstract": "We present RadVLM-3D, a multimodal large language model that takes 3D chest CT volumes as input to generate free-text radiology findings reports and classify 18 thoracic abnormalities using BLEU-4 and AUROC."
+  },
+  {
+    "id": "TN_13_TransMorph_RegistrationOnly",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Deformable 3D Brain MRI Image Registration via Unsupervised Flow Estimation",
+    "venue": "Medical Image Analysis",
+    "publication_date": "2024-07-01",
+    "abstract": "We propose an unsupervised deformable image registration network that predicts 3D displacement vector fields to align moving and fixed 3D brain MRI scans without performing semantic segmentation."
+  },
+  {
+    "id": "TN_14_CT_SuperResolution",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Volumetric 3D CT Super-Resolution and Low-Dose Denoising via 3D Swin Transformers",
+    "venue": "Physics in Medicine & Biology",
+    "publication_date": "2024-11-12",
+    "abstract": "We introduce a 3D restoration network for through-plane super-resolution and noise reduction in low-dose 3D CT volumes, achieving superior PSNR and SSIM."
+  },
+  {
+    "id": "TN_15_MRI_to_PET_Synthesis",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Cross-Modality 3D MRI-to-PET Image Synthesis Using Conditional Generative Adversarial Networks",
+    "venue": "NeuroImage",
+    "publication_date": "2024-09-01",
+    "abstract": "We develop a 3D conditional GAN to synthesize missing 3D FDG-PET brain volumes from structural T1-weighted MRI scans for Alzheimer disease diagnosis."
+  },
+  {
+    "id": "TN_16_PrivateHosp_Liver3D",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Automated 3D Liver CT Segmentation Evaluated Exclusively on an Internal Private Hospital Cohort",
+    "venue": "Journal of Digital Imaging",
+    "publication_date": "2025-02-10",
+    "abstract": "We train a 3D U-Net variant for hepatic vessel and liver segmentation on contrast-enhanced 3D CT. All training and testing experiments were conducted exclusively on an internal private hospital cohort of 95 patients collected at our institution, with no public dataset evaluation."
+  },
+  {
+    "id": "TN_17_Proprietary_CardiacMRI",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "3D Cardiac MRI Ventricle Segmentation Trained and Tested Solely on a Proprietary Single-Center Clinical Dataset",
+    "venue": "Computers in Biology and Medicine",
+    "publication_date": "2024-10-20",
+    "abstract": "We present a 3D CNN for biventricular myocardium segmentation in 3D cine MRI. The model is evaluated solely on a proprietary single-center clinical dataset of 140 patients that cannot be publicly shared due to institutional privacy restrictions."
+  },
+  {
+    "id": "TN_18_InHouse_StrokeCT",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Deep 3D Non-Contrast CT Stroke Lesion Segmentation on an In-House Institutional Registry",
+    "venue": "Academic Radiology",
+    "publication_date": "2025-01-05",
+    "abstract": "We evaluate a 3D attention network for acute ischemic stroke lesion segmentation in non-contrast head CT. Experiments are performed exclusively on an in-house private institutional cohort of 180 patients from our emergency department."
+  },
+  {
+    "id": "TN_19_Confidential_Pancreas",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "3D Pancreas Tumor Segmentation on a Confidential Multi-Hospital Private Cohort",
+    "venue": "European Journal of Radiology",
+    "publication_date": "2024-11-28",
+    "abstract": "We propose a dual-phase 3D CT segmentation model for pancreatic ductal adenocarcinoma. All evaluations are restricted to a confidential private cohort collected across three partner hospitals without public benchmark comparisons."
+  },
+  {
+    "id": "TN_20_Proprietary_KneeMRI",
+    "expected_included": false,
+    "expected_tier": "REJECTED",
+    "title": "Volumetric Cartilage Segmentation on a Proprietary Orthopaedic Clinic 3D MRI Cohort",
+    "venue": "Skeletal Radiology",
+    "publication_date": "2025-03-02",
+    "abstract": "We develop a 3D convolutional network for knee cartilage segmentation in 3D DESS MRI, trained and validated exclusively on a proprietary dataset of 210 scans from our private orthopaedic clinic."
+  }
+]
+

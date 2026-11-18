@@ -54,6 +54,11 @@ logs/
 # Paper Caches & Downloaded PDFs
 data/cache_papers/
 data/cache_repos/
+data/cache_scout/
 data/sample_papers/
 *.pdf
+
+# Local Agent Configs
+.agents/
+.claude/
 
